@@ -10,6 +10,7 @@ pub mod execution_context;
 pub mod missing;
 pub mod observability;
 pub mod repro;
+pub mod results;
 pub mod time_series;
 
 pub use constraints::{
@@ -26,6 +27,9 @@ pub use missing::{
 };
 pub use observability::{ProgressSink, TelemetrySink};
 pub use repro::ReproMode;
+pub use results::{
+    OfflineChangePointResult, SegmentStats, segments_from_breakpoints, validate_breakpoints,
+};
 pub use time_series::{DTypeView, MemoryLayout, MissingPolicy, TimeIndex, TimeSeriesView};
 
 /// Core shared types and traits for cpd-rs.
