@@ -20,3 +20,6 @@ blas = []
 gp = []
 preprocess = []
 repro-strict = []
+
+[dependencies]
+thiserror = "2"
