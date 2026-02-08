@@ -25,3 +25,11 @@ repro-strict = ["cpd-offline/repro-strict"]
 cpd-core = { path = "../cpd-core" }
 cpd-costs = { path = "../cpd-costs" }
 cpd-offline = { path = "../cpd-offline" }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "numerics_prefix"
+harness = false
+path = "benches/numerics_prefix.rs"

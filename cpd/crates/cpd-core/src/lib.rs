@@ -9,6 +9,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod execution_context;
 pub mod missing;
+pub mod numerics;
 pub mod observability;
 pub mod repro;
 pub mod results;
@@ -27,6 +28,10 @@ pub use execution_context::ExecutionContext;
 pub use missing::{
     MissingRunStats, MissingSupport, build_missing_mask, check_missing_compatibility,
     compute_missing_run_stats, scan_nans,
+};
+pub use numerics::{
+    kahan_sum, log_add_exp, log_sum_exp, prefix_sum_squares, prefix_sum_squares_kahan, prefix_sums,
+    prefix_sums_kahan, stable_mean, stable_variance,
 };
 pub use observability::{ProgressSink, TelemetrySink};
 pub use repro::ReproMode;

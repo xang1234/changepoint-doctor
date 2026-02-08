@@ -170,8 +170,10 @@ impl OfflineChangePointResult {
             }
 
             let expected_bounds = segments_from_breakpoints(n, &self.breakpoints);
-            for (idx, (segment, (expected_start, expected_end))) in
-                segments.iter().zip(expected_bounds.iter().copied()).enumerate()
+            for (idx, (segment, (expected_start, expected_end))) in segments
+                .iter()
+                .zip(expected_bounds.iter().copied())
+                .enumerate()
             {
                 if segment.end < segment.start {
                     return Err(CpdError::invalid_input(format!(
@@ -270,8 +272,7 @@ mod tests {
         let dup_err = validate_breakpoints(100, &[50, 50, 100]).expect_err("duplicate should fail");
         assert!(dup_err.to_string().contains("strictly increasing"));
 
-        let oob_err =
-            validate_breakpoints(100, &[50, 101]).expect_err("out-of-range should fail");
+        let oob_err = validate_breakpoints(100, &[50, 101]).expect_err("out-of-range should fail");
         assert!(oob_err.to_string().contains("must be <= n"));
     }
 
@@ -405,8 +406,9 @@ mod tests {
 
     #[test]
     fn offline_result_validate_catches_manual_field_inconsistency() {
-        let mut result = OfflineChangePointResult::new(100, vec![50, 100], diagnostics_with_shape(100, 1))
-            .expect("new valid");
+        let mut result =
+            OfflineChangePointResult::new(100, vec![50, 100], diagnostics_with_shape(100, 1))
+                .expect("new valid");
         result.change_points = vec![40];
 
         let err = result

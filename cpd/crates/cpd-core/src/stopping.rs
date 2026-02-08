@@ -167,8 +167,11 @@ mod tests {
 
     #[test]
     fn validate_stopping_rejects_penalty_path_with_invalid_manual() {
-        let err = validate_stopping(&Stopping::PenaltyPath(vec![Penalty::BIC, Penalty::Manual(0.0)]))
-            .expect_err("invalid manual in path should fail");
+        let err = validate_stopping(&Stopping::PenaltyPath(vec![
+            Penalty::BIC,
+            Penalty::Manual(0.0),
+        ]))
+        .expect_err("invalid manual in path should fail");
         assert!(err.to_string().contains("PenaltyPath[1]"));
     }
 
@@ -209,8 +212,8 @@ mod tests {
         let pps_err = penalty_value(&Penalty::BIC, 10, 1, 0).expect_err("params=0 should fail");
         assert!(pps_err.to_string().contains("params_per_segment"));
 
-        let overflow_err = penalty_value(&Penalty::AIC, 10, usize::MAX, 2)
-            .expect_err("overflow should fail");
+        let overflow_err =
+            penalty_value(&Penalty::AIC, 10, usize::MAX, 2).expect_err("overflow should fail");
         assert!(overflow_err.to_string().contains("overflow"));
     }
 }

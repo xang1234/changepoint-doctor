@@ -349,7 +349,8 @@ mod tests {
         };
         let ctx = ExecutionContext::new(&constraints).with_budget_mode(BudgetMode::SoftDegrade);
         assert_eq!(
-            ctx.check_budget(11).expect("wrapper should preserve behavior"),
+            ctx.check_budget(11)
+                .expect("wrapper should preserve behavior"),
             BudgetStatus::ExceededSoftDegrade
         );
     }

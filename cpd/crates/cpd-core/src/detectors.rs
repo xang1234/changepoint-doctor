@@ -29,14 +29,10 @@ pub trait OfflineDetector {
 
 fn uniform_timestamp(t: usize, t0_ns: i64, dt_ns: i64) -> Result<i64, CpdError> {
     let t_i64 = i64::try_from(t).map_err(|_| {
-        CpdError::invalid_input(format!(
-            "time index overflow: t={t} does not fit into i64"
-        ))
+        CpdError::invalid_input(format!("time index overflow: t={t} does not fit into i64"))
     })?;
     let delta = dt_ns.checked_mul(t_i64).ok_or_else(|| {
-        CpdError::invalid_input(format!(
-            "uniform timestamp overflow: dt_ns={dt_ns}, t={t}"
-        ))
+        CpdError::invalid_input(format!("uniform timestamp overflow: dt_ns={dt_ns}, t={t}"))
     })?;
     t0_ns.checked_add(delta).ok_or_else(|| {
         CpdError::invalid_input(format!(
@@ -207,7 +203,7 @@ pub trait OnlineDetector {
 mod tests {
     use super::{OfflineDetector, OnlineDetector, OnlineStepResult};
     use crate::{
-        Constraints, Diagnostics, DTypeView, ExecutionContext, MemoryLayout, MissingPolicy,
+        Constraints, DTypeView, Diagnostics, ExecutionContext, MemoryLayout, MissingPolicy,
         OfflineChangePointResult, TimeIndex, TimeSeriesView,
     };
     use std::borrow::Cow;
@@ -323,7 +319,9 @@ mod tests {
             MissingPolicy::Error,
         )
         .expect("view should be valid");
-        let result = detector.detect(&view, &ctx()).expect("detect should succeed");
+        let result = detector
+            .detect(&view, &ctx())
+            .expect("detect should succeed");
         assert_eq!(result.breakpoints, vec![3]);
     }
 
@@ -360,7 +358,10 @@ mod tests {
             .update_many(&view, &ctx())
             .expect("batch update should succeed");
         assert_eq!(out.len(), 3);
-        assert_eq!(detector.recorded_inputs, vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]]);
+        assert_eq!(
+            detector.recorded_inputs,
+            vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]]
+        );
         assert_eq!(detector.recorded_timestamps, vec![None, None, None]);
     }
 
@@ -383,7 +384,10 @@ mod tests {
         detector
             .update_many(&view, &ctx())
             .expect("batch update should succeed");
-        assert_eq!(detector.recorded_inputs, vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]]);
+        assert_eq!(
+            detector.recorded_inputs,
+            vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]]
+        );
     }
 
     #[test]
@@ -409,7 +413,10 @@ mod tests {
         detector
             .update_many(&view, &ctx())
             .expect("strided update should succeed");
-        assert_eq!(detector.recorded_inputs, vec![vec![10.0, 20.0], vec![30.0, 40.0], vec![50.0, 60.0]]);
+        assert_eq!(
+            detector.recorded_inputs,
+            vec![vec![10.0, 20.0], vec![30.0, 40.0], vec![50.0, 60.0]]
+        );
     }
 
     #[test]
