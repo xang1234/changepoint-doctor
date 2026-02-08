@@ -38,3 +38,8 @@ path = "benches/numerics_prefix.rs"
 name = "cost_l2"
 harness = false
 path = "benches/cost_l2.rs"
+
+[[bench]]
+name = "offline_pelt"
+harness = false
+path = "benches/offline_pelt.rs"

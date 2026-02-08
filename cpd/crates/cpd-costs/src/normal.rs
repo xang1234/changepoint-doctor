@@ -388,12 +388,7 @@ mod tests {
         m * var.ln()
     }
 
-    fn naive_normal_multivariate_c(
-        values: &[f64],
-        d: usize,
-        start: usize,
-        end: usize,
-    ) -> f64 {
+    fn naive_normal_multivariate_c(values: &[f64], d: usize, start: usize, end: usize) -> f64 {
         let mut total = 0.0;
         for dim in 0..d {
             let mut segment = Vec::with_capacity(end - start);
