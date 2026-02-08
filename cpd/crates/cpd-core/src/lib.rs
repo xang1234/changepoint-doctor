@@ -2,10 +2,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod constraints;
 pub mod error;
 pub mod missing;
 pub mod time_series;
 
+pub use constraints::{
+    CachePolicy, Constraints, DegradationStep, ValidatedConstraints, canonicalize_candidates,
+    validate_constraints,
+};
 pub use error::CpdError;
 pub use missing::{
     MissingRunStats, MissingSupport, build_missing_mask, check_missing_compatibility,
