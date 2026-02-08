@@ -2,8 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod binseg;
 pub mod pelt;
 
+pub use binseg::{BinSeg, BinSegConfig};
 pub use pelt::{Pelt, PeltConfig};
 
 /// Offline detector namespace placeholder.

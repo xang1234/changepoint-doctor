@@ -43,3 +43,8 @@ path = "benches/cost_l2.rs"
 name = "offline_pelt"
 harness = false
 path = "benches/offline_pelt.rs"
+
+[[bench]]
+name = "offline_binseg"
+harness = false
+path = "benches/offline_binseg.rs"
