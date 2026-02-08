@@ -3,9 +3,14 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod missing;
 pub mod time_series;
 
 pub use error::CpdError;
+pub use missing::{
+    MissingRunStats, MissingSupport, build_missing_mask, check_missing_compatibility,
+    compute_missing_run_stats, scan_nans,
+};
 pub use time_series::{DTypeView, MemoryLayout, MissingPolicy, TimeIndex, TimeSeriesView};
 
 /// Core shared types and traits for cpd-rs.

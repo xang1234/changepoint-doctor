@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 use crate::CpdError;
+use crate::missing::scan_nans;
 
 /// Missing-data handling strategy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +57,50 @@ pub struct TimeSeriesView<'a> {
     pub missing_mask: Option<&'a [u8]>,
     pub time: TimeIndex<'a>,
     pub missing: MissingPolicy,
+    effective_missing_count: usize,
+    total_value_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EffectiveMissingStats {
+    effective_missing_count: usize,
+    mask_missing_count: usize,
+    nan_missing_count: usize,
+    first_missing_index: Option<usize>,
+}
+
+fn effective_missing_stats(
+    values: DTypeView<'_>,
+    missing_mask: Option<&[u8]>,
+) -> EffectiveMissingStats {
+    let (nan_missing_count, nan_positions) = scan_nans(values);
+    let first_nan_index = nan_positions.first().copied();
+
+    if let Some(mask) = missing_mask {
+        let mask_missing_count = mask.iter().copied().map(usize::from).sum();
+        let first_mask_index = mask.iter().position(|&value| value == 1);
+        let additional_nan_count = nan_positions.iter().filter(|&&idx| mask[idx] == 0).count();
+        let first_missing_index = match (first_mask_index, first_nan_index) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(left), None) => Some(left),
+            (None, Some(right)) => Some(right),
+            (None, None) => None,
+        };
+
+        EffectiveMissingStats {
+            effective_missing_count: mask_missing_count + additional_nan_count,
+            mask_missing_count,
+            nan_missing_count,
+            first_missing_index,
+        }
+    } else {
+        EffectiveMissingStats {
+            effective_missing_count: nan_missing_count,
+            mask_missing_count: 0,
+            nan_missing_count,
+            first_missing_index: first_nan_index,
+        }
+    }
 }
 
 impl<'a> TimeSeriesView<'a> {
@@ -112,6 +157,17 @@ impl<'a> TimeSeriesView<'a> {
             }
         }
 
+        let missing_stats = effective_missing_stats(values, missing_mask);
+        if matches!(missing, MissingPolicy::Error) && missing_stats.effective_missing_count > 0 {
+            let first_missing_index = missing_stats.first_missing_index.unwrap_or(0);
+            return Err(CpdError::invalid_input(format!(
+                "missing data encountered with MissingPolicy::Error: effective_missing_count={}, mask_missing_count={}, nan_missing_count={}, first_missing_index={first_missing_index}",
+                missing_stats.effective_missing_count,
+                missing_stats.mask_missing_count,
+                missing_stats.nan_missing_count
+            )));
+        }
+
         match time {
             TimeIndex::None => {}
             TimeIndex::Uniform { dt_ns, .. } => {
@@ -152,6 +208,8 @@ impl<'a> TimeSeriesView<'a> {
             missing_mask,
             time,
             missing,
+            effective_missing_count: missing_stats.effective_missing_count,
+            total_value_count: expected_len,
         })
     }
 
@@ -207,15 +265,29 @@ impl<'a> TimeSeriesView<'a> {
         self.d > 1
     }
 
-    /// Returns true when the mask exists and contains at least one missing value.
+    /// Returns true when the effective missing set (mask union NaNs) is non-empty.
     pub fn has_missing(&self) -> bool {
         self.n_missing() > 0
     }
 
-    /// Counts missing values using the optional 0/1 mask.
+    /// Counts missing values using `effective_missing = mask UNION NaN`.
     pub fn n_missing(&self) -> usize {
-        self.missing_mask
-            .map_or(0, |mask| mask.iter().copied().map(usize::from).sum())
+        self.effective_missing_count
+    }
+
+    /// Returns the effective fraction of missing values in `[0.0, 1.0]`.
+    pub fn missing_fraction(&self) -> f64 {
+        if self.total_value_count == 0 {
+            0.0
+        } else {
+            self.effective_missing_count as f64 / self.total_value_count as f64
+        }
+    }
+
+    /// Returns the number of non-missing values after applying union semantics.
+    pub fn effective_sample_count(&self) -> usize {
+        self.total_value_count
+            .saturating_sub(self.effective_missing_count)
     }
 }
 
@@ -520,6 +592,144 @@ mod tests {
         .expect("mixed mask should succeed");
         assert_eq!(mixed_view.n_missing(), 2);
         assert!(mixed_view.has_missing());
+    }
+
+    #[test]
+    fn missing_policy_error_rejects_nan_only_input() {
+        let data = [1.0_f64, f64::NAN, 3.0, 4.0];
+        let err = TimeSeriesView::from_f64(
+            &data,
+            2,
+            2,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::None,
+            MissingPolicy::Error,
+        )
+        .expect_err("MissingPolicy::Error must reject NaN input");
+        let msg = err.to_string();
+        assert!(msg.contains("MissingPolicy::Error"));
+        assert!(msg.contains("effective_missing_count=1"));
+        assert!(msg.contains("first_missing_index=1"));
+    }
+
+    #[test]
+    fn missing_policy_error_rejects_mask_only_missing_input() {
+        let data = [1.0_f64, 2.0, 3.0, 4.0];
+        let mask = [0_u8, 1_u8, 0_u8, 0_u8];
+        let err = TimeSeriesView::from_f64(
+            &data,
+            2,
+            2,
+            MemoryLayout::CContiguous,
+            Some(&mask),
+            TimeIndex::None,
+            MissingPolicy::Error,
+        )
+        .expect_err("MissingPolicy::Error must reject explicit missing mask entries");
+        let msg = err.to_string();
+        assert!(msg.contains("effective_missing_count=1"));
+        assert!(msg.contains("mask_missing_count=1"));
+        assert!(msg.contains("first_missing_index=1"));
+    }
+
+    #[test]
+    fn missing_policy_error_rejects_union_of_mask_and_nans() {
+        let data = [1.0_f64, f64::NAN, 3.0, 4.0];
+        let mask = [1_u8, 0_u8, 0_u8, 0_u8];
+        let err = TimeSeriesView::from_f64(
+            &data,
+            2,
+            2,
+            MemoryLayout::CContiguous,
+            Some(&mask),
+            TimeIndex::None,
+            MissingPolicy::Error,
+        )
+        .expect_err("MissingPolicy::Error must reject effective missing union");
+        let msg = err.to_string();
+        assert!(msg.contains("effective_missing_count=2"));
+        assert!(msg.contains("mask_missing_count=1"));
+        assert!(msg.contains("nan_missing_count=1"));
+        assert!(msg.contains("first_missing_index=0"));
+    }
+
+    #[test]
+    fn non_error_missing_policies_accept_missing_inputs() {
+        let data = [1.0_f64, f64::NAN, 3.0, 4.0];
+        let mask = [1_u8, 0_u8, 0_u8, 0_u8];
+        let policies = [
+            MissingPolicy::ImputeZero,
+            MissingPolicy::ImputeLast,
+            MissingPolicy::Ignore,
+        ];
+
+        for policy in policies {
+            let view = TimeSeriesView::from_f64(
+                &data,
+                2,
+                2,
+                MemoryLayout::CContiguous,
+                Some(&mask),
+                TimeIndex::None,
+                policy,
+            )
+            .expect("non-error missing policy should accept missing data");
+
+            assert_eq!(view.n_missing(), 2);
+            assert!(view.has_missing());
+        }
+    }
+
+    #[test]
+    fn union_semantics_count_disjoint_mask_and_nans() {
+        let data = [1.0_f64, 2.0, f64::NAN, 4.0, 5.0, 6.0];
+        let mask = [0_u8, 1_u8, 0_u8, 0_u8, 1_u8, 0_u8];
+        let view = TimeSeriesView::from_f64(
+            &data,
+            3,
+            2,
+            MemoryLayout::CContiguous,
+            Some(&mask),
+            TimeIndex::None,
+            MissingPolicy::Ignore,
+        )
+        .expect("Ignore should accept missing union semantics");
+
+        assert_eq!(view.n_missing(), 3);
+        assert!((view.missing_fraction() - 0.5).abs() < f64::EPSILON);
+        assert_eq!(view.effective_sample_count(), 3);
+    }
+
+    #[test]
+    fn missing_fraction_and_effective_sample_count_cover_no_missing_and_full_missing() {
+        let clean = [1.0_f64, 2.0, 3.0, 4.0];
+        let clean_view = TimeSeriesView::from_f64(
+            &clean,
+            2,
+            2,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::None,
+            MissingPolicy::Error,
+        )
+        .expect("clean input should succeed");
+        assert_eq!(clean_view.missing_fraction(), 0.0);
+        assert_eq!(clean_view.effective_sample_count(), 4);
+
+        let all_nan = [f64::NAN, f64::NAN, f64::NAN, f64::NAN];
+        let all_missing_view = TimeSeriesView::from_f64(
+            &all_nan,
+            2,
+            2,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::None,
+            MissingPolicy::Ignore,
+        )
+        .expect("Ignore should accept fully missing data");
+        assert!((all_missing_view.missing_fraction() - 1.0).abs() < f64::EPSILON);
+        assert_eq!(all_missing_view.effective_sample_count(), 0);
     }
 
     #[test]
