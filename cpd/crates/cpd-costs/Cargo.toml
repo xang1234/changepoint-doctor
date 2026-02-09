@@ -23,3 +23,6 @@ repro-strict = ["cpd-core/repro-strict"]
 
 [dependencies]
 cpd-core = { path = "../cpd-core" }
+
+[dev-dependencies]
+proptest = "1"

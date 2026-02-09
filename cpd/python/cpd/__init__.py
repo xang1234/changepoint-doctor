@@ -1,6 +1,7 @@
 """Python bindings for cpd-rs."""
 
 from ._cpd_rs import (
+    Binseg,
     Diagnostics,
     OfflineChangePointResult,
     Pelt,
@@ -8,6 +9,7 @@ from ._cpd_rs import (
     SegmentStats,
     SmokeDetector,
     __version__,
+    detect_offline,
     smoke_detect,
 )
 
@@ -18,6 +20,8 @@ __all__ = [
     "Diagnostics",
     "OfflineChangePointResult",
     "Pelt",
+    "Binseg",
+    "detect_offline",
     "SmokeDetector",
     "smoke_detect",
 ]

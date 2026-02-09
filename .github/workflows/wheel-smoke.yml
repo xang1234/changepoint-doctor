@@ -47,9 +47,19 @@ jobs:
           python -m pip install wheelhouse/*.whl
 
       - name: Import smoke test
-        run: python -c "import cpd; print(cpd.__version__); assert cpd.smoke_detect([0.0, 1.0]) == [2]"
+        run: >
+          python -c "import time, numpy as np; t=time.perf_counter(); import cpd; dt=time.perf_counter()-t;
+          print(cpd.__version__); print(f'import_seconds={dt:.6f}');
+          assert dt < 2.0, f'import took {dt:.3f}s, expected < 2.0s';
+          x=np.concatenate((np.zeros(50, dtype=np.float64), np.full(50, 5.0, dtype=np.float64)));
+          p=cpd.Pelt(model='l2').fit(x).predict(n_bkps=1);
+          b=cpd.Binseg(model='l2').fit(x).predict(n_bkps=1);
+          low=cpd.detect_offline(x, detector='pelt', cost='l2', stopping={'n_bkps': 1});
+          assert p.breakpoints == [50, 100];
+          assert b.breakpoints == [50, 100];
+          assert low.breakpoints == [50, 100]"
 
       - name: Run Python smoke test module
         run: |
           python -m pip install pytest
-          pytest -q cpd/python/tests/test_smoke.py
+          pytest -q cpd/python/tests/test_smoke.py cpd/python/tests/test_integration_mvp_a.py

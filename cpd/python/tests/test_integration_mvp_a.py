@@ -1,0 +1,109 @@
+import numpy as np
+import pytest
+import threading
+import time
+
+import cpd
+
+
+def _three_regime_signal() -> np.ndarray:
+    return np.concatenate(
+        [
+            np.zeros(40, dtype=np.float64),
+            np.full(40, 8.0, dtype=np.float64),
+            np.full(40, -4.0, dtype=np.float64),
+        ]
+    )
+
+
+def test_import_surface_exposes_mvp_a_api() -> None:
+    assert hasattr(cpd, "Pelt")
+    assert hasattr(cpd, "Binseg")
+    assert hasattr(cpd, "detect_offline")
+
+
+def test_pelt_and_binseg_detect_known_breakpoints() -> None:
+    x = _three_regime_signal()
+
+    pelt = cpd.Pelt(model="l2", min_segment_len=2).fit(x).predict(n_bkps=2)
+    binseg = cpd.Binseg(model="l2", min_segment_len=2).fit(x).predict(n_bkps=2)
+
+    assert pelt.breakpoints == [40, 80, 120]
+    assert binseg.breakpoints == [40, 80, 120]
+
+
+def test_detect_offline_matches_class_api_for_pelt_and_binseg() -> None:
+    x = _three_regime_signal()
+
+    pelt_class = cpd.Pelt(model="l2", min_segment_len=2).fit(x).predict(n_bkps=2)
+    pelt_low = cpd.detect_offline(
+        x,
+        detector="pelt",
+        cost="l2",
+        constraints={"min_segment_len": 2},
+        stopping={"n_bkps": 2},
+        repro_mode="balanced",
+    )
+
+    binseg_class = cpd.Binseg(model="l2", min_segment_len=2).fit(x).predict(n_bkps=2)
+    binseg_low = cpd.detect_offline(
+        x,
+        detector="binseg",
+        cost="l2",
+        constraints={"min_segment_len": 2},
+        stopping={"n_bkps": 2},
+        repro_mode="balanced",
+    )
+
+    assert pelt_low.breakpoints == pelt_class.breakpoints
+    assert binseg_low.breakpoints == binseg_class.breakpoints
+
+
+def test_detect_offline_rejects_invalid_parameters() -> None:
+    x = _three_regime_signal()
+
+    with pytest.raises(ValueError, match="unsupported detector"):
+        cpd.detect_offline(x, detector="nope")
+
+    with pytest.raises(ValueError, match="exactly one"):
+        cpd.detect_offline(x, stopping={"n_bkps": 2, "pen": 1.0})
+
+    with pytest.raises(ValueError, match="unsupported constraints key"):
+        cpd.detect_offline(x, constraints={"not_a_real_key": 1}, stopping={"n_bkps": 2})
+
+
+def test_detect_offline_error_paths_are_clear() -> None:
+    with pytest.raises((ValueError, RuntimeError)):
+        cpd.detect_offline(np.array([], dtype=np.float64), stopping={"n_bkps": 1})
+
+
+def test_binseg_releases_gil_during_predict() -> None:
+    n = 100_000
+    values = np.zeros(n, dtype=np.float64)
+    values[n // 2 :] = 3.0
+
+    state = {"running": True, "in_predict": False, "during_predict_ticks": 0}
+
+    def worker() -> None:
+        while state["running"]:
+            if state["in_predict"]:
+                state["during_predict_ticks"] += 1
+            time.sleep(0)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    time.sleep(0.01)
+
+    try:
+        state["in_predict"] = True
+        _ = (
+            cpd.Binseg(model="l2", min_segment_len=50, jump=50, max_change_points=8)
+            .fit(values)
+            .predict(pen=1.0)
+        )
+    finally:
+        state["in_predict"] = False
+        state["running"] = False
+        thread.join(timeout=2.0)
+
+    assert state["during_predict_ticks"] > 0

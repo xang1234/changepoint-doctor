@@ -24,3 +24,6 @@ repro-strict = ["cpd-core/repro-strict", "cpd-costs/repro-strict"]
 [dependencies]
 cpd-core = { path = "../cpd-core" }
 cpd-costs = { path = "../cpd-costs" }
+
+[dev-dependencies]
+proptest = "1"

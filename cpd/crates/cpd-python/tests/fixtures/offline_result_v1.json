@@ -1,0 +1,50 @@
+{
+  "breakpoints": [40, 100],
+  "change_points": [40],
+  "scores": [0.75],
+  "segments": [
+    {
+      "start": 0,
+      "end": 40,
+      "mean": [1.0, 2.0],
+      "variance": [0.1, 0.2],
+      "count": 40,
+      "missing_count": 2
+    },
+    {
+      "start": 40,
+      "end": 100,
+      "mean": [3.0, 4.0],
+      "variance": [0.3, 0.4],
+      "count": 60,
+      "missing_count": 3
+    }
+  ],
+  "diagnostics": {
+    "n": 100,
+    "d": 2,
+    "schema_version": 1,
+    "engine_version": "0.1.0",
+    "runtime_ms": 123,
+    "notes": ["run complete"],
+    "warnings": ["none"],
+    "algorithm": "pelt",
+    "cost_model": "l2_mean",
+    "seed": 7,
+    "repro_mode": "Balanced",
+    "thread_count": 4,
+    "blas_backend": "openblas",
+    "cpu_features": ["avx2", "fma"],
+    "params_json": {
+      "jump": 5,
+      "min_segment_len": 10
+    },
+    "pruning_stats": {
+      "candidates_considered": 150,
+      "candidates_pruned": 120
+    },
+    "missing_policy_applied": "Ignore",
+    "missing_fraction": 0.1,
+    "effective_sample_count": 90
+  }
+}

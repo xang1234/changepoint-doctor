@@ -1,0 +1,4 @@
+# Proptest regression seeds for cpd-costs/tests/proptest_invariants.rs.
+#
+# This file is intentionally checked in even when empty so failing seeds are
+# persisted in source control when proptest discovers them.

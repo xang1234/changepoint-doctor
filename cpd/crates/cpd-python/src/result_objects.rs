@@ -503,7 +503,13 @@ mod tests {
     use pyo3::exceptions::PyNotImplementedError;
     use pyo3::prelude::*;
     use pyo3::types::{PyAnyMethods, PyList};
+    #[cfg(feature = "serde")]
+    use serde_json::Value;
     use std::borrow::Cow;
+
+    #[cfg(feature = "serde")]
+    const OFFLINE_RESULT_FIXTURE_JSON: &str =
+        include_str!("../tests/fixtures/offline_result_v1.json");
 
     fn sample_core_result() -> CoreOfflineChangePointResult {
         let diagnostics = CoreDiagnostics {
@@ -783,6 +789,57 @@ mod tests {
                     "min_segment_len": 10
                 }))
             );
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn serde_fixture_deserializes_and_validates() {
+        let decoded: CoreOfflineChangePointResult =
+            serde_json::from_str(OFFLINE_RESULT_FIXTURE_JSON)
+                .expect("fixture should deserialize as core result");
+        decoded
+            .validate(decoded.diagnostics.n)
+            .expect("fixture should validate");
+        assert_eq!(decoded.breakpoints, vec![40, 100]);
+        assert_eq!(decoded.change_points, vec![40]);
+        assert_eq!(
+            decoded.diagnostics.schema_version,
+            DIAGNOSTICS_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn to_json_matches_versioned_fixture_shape() {
+        Python::with_gil(|py| {
+            let py_result = Py::new(py, PyOfflineChangePointResult::from(sample_core_result()))
+                .expect("result object should be constructible");
+
+            let json_payload: String = py_result
+                .bind(py)
+                .call_method0("to_json")
+                .expect("to_json should succeed")
+                .extract()
+                .expect("to_json should return string");
+
+            let generated: Value =
+                serde_json::from_str(&json_payload).expect("generated JSON should parse");
+            let mut fixture: Value = serde_json::from_str(OFFLINE_RESULT_FIXTURE_JSON)
+                .expect("fixture JSON should parse");
+
+            // Keep fixture stable across version bumps while asserting full shape equality.
+            if let Some(diagnostics) = fixture
+                .get_mut("diagnostics")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                diagnostics.insert(
+                    "engine_version".to_string(),
+                    Value::String(env!("CARGO_PKG_VERSION").to_string()),
+                );
+            }
+
+            assert_eq!(generated, fixture);
         });
     }
 

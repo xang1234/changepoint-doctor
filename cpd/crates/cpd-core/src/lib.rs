@@ -33,7 +33,7 @@ pub use numerics::{
     kahan_sum, log_add_exp, log_sum_exp, prefix_sum_squares, prefix_sum_squares_kahan, prefix_sums,
     prefix_sums_kahan, stable_mean, stable_variance,
 };
-pub use observability::{ProgressSink, TelemetrySink};
+pub use observability::{NoopProgressSink, NoopTelemetrySink, ProgressSink, TelemetrySink};
 pub use repro::ReproMode;
 pub use results::{
     OfflineChangePointResult, SegmentStats, segments_from_breakpoints, validate_breakpoints,

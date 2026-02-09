@@ -96,10 +96,37 @@ class Pelt:
     ) -> OfflineChangePointResult: ...
 
 
+class Binseg:
+    def __init__(
+        self,
+        model: str = "l2",
+        min_segment_len: int = 2,
+        jump: int = 1,
+        max_change_points: int | None = None,
+        max_depth: int | None = None,
+    ) -> None: ...
+    def fit(self, values: Any) -> Binseg: ...
+    def predict(
+        self, *, pen: float | None = None, n_bkps: int | None = None
+    ) -> OfflineChangePointResult: ...
+
+
 class SmokeDetector:
     def __init__(self) -> None: ...
     def fit(self, values: Sequence[float]) -> SmokeDetector: ...
     def predict(self) -> list[int]: ...
+
+
+def detect_offline(
+    values: Any,
+    *,
+    detector: str = "pelt",
+    cost: str = "l2",
+    constraints: dict[str, Any] | None = None,
+    stopping: dict[str, Any] | None = None,
+    repro_mode: str = "balanced",
+    return_diagnostics: bool = True,
+) -> OfflineChangePointResult: ...
 
 
 def smoke_detect(values: Sequence[float]) -> list[int]: ...
