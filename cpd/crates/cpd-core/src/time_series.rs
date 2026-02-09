@@ -289,6 +289,44 @@ impl<'a> TimeSeriesView<'a> {
         self.total_value_count
             .saturating_sub(self.effective_missing_count)
     }
+
+    /// Returns the timestamp for a sample index.
+    ///
+    /// Returns `None` when:
+    /// - no time index is attached,
+    /// - `idx` is out of bounds, or
+    /// - timestamp arithmetic overflows (uniform index).
+    pub fn timestamp_at(&self, idx: usize) -> Option<i64> {
+        if idx >= self.n {
+            return None;
+        }
+
+        match self.time {
+            TimeIndex::None => None,
+            TimeIndex::Uniform { t0_ns, dt_ns } => {
+                let idx_i64 = i64::try_from(idx).ok()?;
+                let delta = dt_ns.checked_mul(idx_i64)?;
+                t0_ns.checked_add(delta)
+            }
+            TimeIndex::Explicit(timestamps) => timestamps.get(idx).copied(),
+        }
+    }
+
+    /// Returns elapsed time between two sample indices as `end - start`.
+    ///
+    /// Returns `None` when:
+    /// - indices are reversed (`start_idx > end_idx`),
+    /// - either index has no timestamp, or
+    /// - subtraction overflows.
+    pub fn duration_between(&self, start_idx: usize, end_idx: usize) -> Option<i64> {
+        if start_idx > end_idx {
+            return None;
+        }
+
+        let start = self.timestamp_at(start_idx)?;
+        let end = self.timestamp_at(end_idx)?;
+        end.checked_sub(start)
+    }
 }
 
 #[cfg(test)]
@@ -511,6 +549,181 @@ mod tests {
             err.to_string()
                 .contains("Explicit time index length mismatch")
         );
+    }
+
+    #[test]
+    fn timestamp_at_returns_none_for_missing_time_index() {
+        let data = [1.0_f64, 2.0, 3.0];
+        let view = TimeSeriesView::from_f64(
+            &data,
+            3,
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::None,
+            MissingPolicy::Error,
+        )
+        .expect("view should be valid");
+
+        assert_eq!(view.timestamp_at(0), None);
+        assert_eq!(view.timestamp_at(2), None);
+    }
+
+    #[test]
+    fn timestamp_at_uniform_handles_valid_out_of_range_and_overflow_cases() {
+        let data = [1.0_f64, 2.0, 3.0];
+        let view = TimeSeriesView::from_f64(
+            &data,
+            3,
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::Uniform {
+                t0_ns: 1_000,
+                dt_ns: 5,
+            },
+            MissingPolicy::Error,
+        )
+        .expect("view should be valid");
+
+        assert_eq!(view.timestamp_at(0), Some(1_000));
+        assert_eq!(view.timestamp_at(1), Some(1_005));
+        assert_eq!(view.timestamp_at(2), Some(1_010));
+        assert_eq!(view.timestamp_at(3), None);
+
+        let overflow_view = TimeSeriesView::from_f64(
+            &data,
+            3,
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::Uniform {
+                t0_ns: i64::MAX - 1,
+                dt_ns: 2,
+            },
+            MissingPolicy::Error,
+        )
+        .expect("overflow test view should be valid");
+        assert_eq!(overflow_view.timestamp_at(1), None);
+    }
+
+    #[test]
+    fn timestamp_at_explicit_returns_values_and_none_out_of_range() {
+        let data = [1.0_f64, 2.0, 3.0];
+        let ts = [11_i64, 17_i64, 23_i64];
+        let view = TimeSeriesView::from_f64(
+            &data,
+            3,
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::Explicit(&ts),
+            MissingPolicy::Error,
+        )
+        .expect("view should be valid");
+
+        assert_eq!(view.timestamp_at(0), Some(11));
+        assert_eq!(view.timestamp_at(2), Some(23));
+        assert_eq!(view.timestamp_at(3), None);
+    }
+
+    #[test]
+    fn duration_between_returns_none_for_missing_time_index() {
+        let data = [1.0_f64, 2.0, 3.0];
+        let view = TimeSeriesView::from_f64(
+            &data,
+            3,
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::None,
+            MissingPolicy::Error,
+        )
+        .expect("view should be valid");
+
+        assert_eq!(view.duration_between(0, 2), None);
+    }
+
+    #[test]
+    fn duration_between_uniform_and_explicit_use_direct_difference() {
+        let data = [1.0_f64, 2.0, 3.0, 4.0];
+        let uniform = TimeSeriesView::from_f64(
+            &data,
+            4,
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::Uniform {
+                t0_ns: 1_000,
+                dt_ns: 5,
+            },
+            MissingPolicy::Error,
+        )
+        .expect("uniform view should be valid");
+        assert_eq!(uniform.duration_between(1, 3), Some(10));
+
+        let ts = [10_i64, 14_i64, 27_i64, 39_i64];
+        let explicit = TimeSeriesView::from_f64(
+            &data,
+            4,
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::Explicit(&ts),
+            MissingPolicy::Error,
+        )
+        .expect("explicit view should be valid");
+        assert_eq!(explicit.duration_between(1, 3), Some(25));
+    }
+
+    #[test]
+    fn duration_between_returns_none_for_reversed_or_invalid_indices() {
+        let data = [1.0_f64, 2.0, 3.0];
+        let ts = [10_i64, 20_i64, 30_i64];
+        let view = TimeSeriesView::from_f64(
+            &data,
+            3,
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::Explicit(&ts),
+            MissingPolicy::Error,
+        )
+        .expect("view should be valid");
+
+        assert_eq!(view.duration_between(2, 1), None);
+        assert_eq!(view.duration_between(0, 3), None);
+    }
+
+    #[test]
+    fn duration_between_allows_negative_and_returns_none_on_sub_overflow() {
+        let data = [1.0_f64, 2.0, 3.0];
+        let non_monotonic_ts = [10_i64, 5_i64, 7_i64];
+        let non_monotonic = TimeSeriesView::from_f64(
+            &data,
+            3,
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::Explicit(&non_monotonic_ts),
+            MissingPolicy::Error,
+        )
+        .expect("non-monotonic view should be valid");
+        assert_eq!(non_monotonic.duration_between(0, 1), Some(-5));
+
+        let overflow_data = [1.0_f64, 2.0];
+        let overflow_ts = [i64::MAX, i64::MIN];
+        let overflow = TimeSeriesView::from_f64(
+            &overflow_data,
+            2,
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::Explicit(&overflow_ts),
+            MissingPolicy::Error,
+        )
+        .expect("overflow view should be valid");
+        assert_eq!(overflow.duration_between(0, 1), None);
     }
 
     #[test]
