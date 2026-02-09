@@ -39,11 +39,24 @@ jobs:
         run: |
           python3 .github/scripts/benchmark_gate.py collect \
             --workspace cpd \
+            --manifest cpd/benchmarks/mvp_a_benchmark_manifest.json \
             --out cpd/benchmark-current.json \
-            --bench numerics_prefix \
-            --bench cost_l2 \
-            --bench offline_pelt \
-            --bench offline_binseg
+            --case pelt_l2_n1e4_d1_jump1 \
+            --case pelt_l2_n1e5_d1_jump1 \
+            --case pelt_l2_n1e6_d1_jump5_minseg20 \
+            --case binseg_l2_n1e4_d1_jump1 \
+            --case binseg_l2_n1e5_d1_jump1 \
+            --case binseg_l2_n1e6_d1_jump1 \
+            --case cost_models/l2_precompute_n1e6_d1 \
+            --case cost_models/normal_precompute_n1e6_d1 \
+            --case cost_models/l2_segment_queries_n1e6_d1_1m
+
+      - name: Enforce absolute SLO thresholds
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          python3 .github/scripts/benchmark_gate.py compare-absolute \
+            --manifest cpd/benchmarks/mvp_a_benchmark_manifest.json \
+            --current cpd/benchmark-current.json
 
       - name: Upload current benchmark report
         uses: actions/upload-artifact@v4
@@ -88,7 +101,7 @@ jobs:
             exit 0
           fi
 
-          python3 .github/scripts/benchmark_gate.py compare \
+          python3 .github/scripts/benchmark_gate.py compare-relative \
             --baseline "${BASELINE_PATH}" \
             --current cpd/benchmark-current.json \
             --max-runtime-regression-pct 10 \

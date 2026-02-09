@@ -1,0 +1,86 @@
+{
+  "benchmarks": [
+    {
+      "bench": "offline_pelt",
+      "criterion_id": "pelt_l2_n1e4_d1_jump1",
+      "id": "pelt_l2_n1e4_d1_jump1",
+      "max_rss_kib": 40496,
+      "runtime_ns": 1065335.9892473118,
+      "runtime_seconds": 0.0010653359892473118
+    },
+    {
+      "bench": "offline_pelt",
+      "criterion_id": "pelt_l2_n1e5_d1_jump1",
+      "id": "pelt_l2_n1e5_d1_jump1",
+      "max_rss_kib": 54032,
+      "runtime_ns": 10506479.1,
+      "runtime_seconds": 0.0105064791
+    },
+    {
+      "bench": "offline_pelt",
+      "criterion_id": "pelt_l2_n1e6_d1_jump5_minseg20",
+      "id": "pelt_l2_n1e6_d1_jump5_minseg20",
+      "max_rss_kib": 235312,
+      "runtime_ns": 30486166.5,
+      "runtime_seconds": 0.0304861665
+    },
+    {
+      "bench": "offline_binseg",
+      "criterion_id": "binseg_l2_n1e4_d1_jump1",
+      "id": "binseg_l2_n1e4_d1_jump1",
+      "max_rss_kib": 38992,
+      "runtime_ns": 412834.6237067026,
+      "runtime_seconds": 0.0004128346237067026
+    },
+    {
+      "bench": "offline_binseg",
+      "criterion_id": "binseg_l2_n1e5_d1_jump1",
+      "id": "binseg_l2_n1e5_d1_jump1",
+      "max_rss_kib": 54464,
+      "runtime_ns": 4426825.772727273,
+      "runtime_seconds": 0.004426825772727273
+    },
+    {
+      "bench": "offline_binseg",
+      "criterion_id": "binseg_l2_n1e6_d1_jump1",
+      "id": "binseg_l2_n1e6_d1_jump1",
+      "max_rss_kib": 277216,
+      "runtime_ns": 47768166.5,
+      "runtime_seconds": 0.0477681665
+    },
+    {
+      "bench": "cost_l2",
+      "criterion_id": "cost_models/l2_precompute_n1e6_d1",
+      "id": "cost_models/l2_precompute_n1e6_d1",
+      "max_rss_kib": 242368,
+      "runtime_ns": 8235458.333333333,
+      "runtime_seconds": 0.008235458333333332
+    },
+    {
+      "bench": "cost_l2",
+      "criterion_id": "cost_models/normal_precompute_n1e6_d1",
+      "id": "cost_models/normal_precompute_n1e6_d1",
+      "max_rss_kib": 226608,
+      "runtime_ns": 7772791.642857143,
+      "runtime_seconds": 0.007772791642857143
+    },
+    {
+      "bench": "cost_l2",
+      "criterion_id": "cost_models/l2_segment_queries_n1e6_d1_1m",
+      "id": "cost_models/l2_segment_queries_n1e6_d1_1m",
+      "max_rss_kib": 65488,
+      "runtime_ns": 10192891.7,
+      "runtime_seconds": 0.0101928917
+    }
+  ],
+  "metadata": {
+    "collected_at_utc": "2026-02-09T05:34:03.722617+00:00",
+    "manifest_path": "/Users/admin/Documents/Work/claude-doctor-changepoint/cpd/benchmarks/mvp_a_benchmark_manifest.json",
+    "manifest_version": 1,
+    "platform": "macOS-15.5-x86_64-i386-64bit-Mach-O",
+    "python": "3.14.2",
+    "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+    "time_mode": "bsd",
+    "workspace": "/Users/admin/Documents/Work/claude-doctor-changepoint/cpd"
+  }
+}

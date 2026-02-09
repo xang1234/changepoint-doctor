@@ -1,0 +1,69 @@
+{
+  "manifest_version": 1,
+  "suite": "mvp-a-offline-core",
+  "description": "Protected benchmark cases for CPD MVP-A performance gates.",
+  "cases": [
+    {
+      "id": "pelt_l2_n1e4_d1_jump1",
+      "bench": "offline_pelt",
+      "criterion_id": "pelt_l2_n1e4_d1_jump1",
+      "absolute_thresholds": {
+        "max_runtime_seconds": 0.05
+      }
+    },
+    {
+      "id": "pelt_l2_n1e5_d1_jump1",
+      "bench": "offline_pelt",
+      "criterion_id": "pelt_l2_n1e5_d1_jump1",
+      "absolute_thresholds": {
+        "max_runtime_seconds": 0.5
+      }
+    },
+    {
+      "id": "pelt_l2_n1e6_d1_jump5_minseg20",
+      "bench": "offline_pelt",
+      "criterion_id": "pelt_l2_n1e6_d1_jump5_minseg20",
+      "absolute_thresholds": {
+        "max_runtime_seconds": 3.0,
+        "max_rss_kib": 1171875
+      }
+    },
+    {
+      "id": "binseg_l2_n1e4_d1_jump1",
+      "bench": "offline_binseg",
+      "criterion_id": "binseg_l2_n1e4_d1_jump1"
+    },
+    {
+      "id": "binseg_l2_n1e5_d1_jump1",
+      "bench": "offline_binseg",
+      "criterion_id": "binseg_l2_n1e5_d1_jump1"
+    },
+    {
+      "id": "binseg_l2_n1e6_d1_jump1",
+      "bench": "offline_binseg",
+      "criterion_id": "binseg_l2_n1e6_d1_jump1",
+      "absolute_thresholds": {
+        "max_runtime_seconds": 1.5,
+        "max_rss_kib": 683594
+      }
+    },
+    {
+      "id": "cost_models/l2_precompute_n1e6_d1",
+      "bench": "cost_l2",
+      "criterion_id": "cost_models/l2_precompute_n1e6_d1",
+      "absolute_thresholds": {
+        "max_runtime_seconds": 0.02
+      }
+    },
+    {
+      "id": "cost_models/normal_precompute_n1e6_d1",
+      "bench": "cost_l2",
+      "criterion_id": "cost_models/normal_precompute_n1e6_d1"
+    },
+    {
+      "id": "cost_models/l2_segment_queries_n1e6_d1_1m",
+      "bench": "cost_l2",
+      "criterion_id": "cost_models/l2_segment_queries_n1e6_d1_1m"
+    }
+  ]
+}

@@ -6,7 +6,7 @@ use cpd_core::{
     Constraints, DTypeView, ExecutionContext, MemoryLayout, MissingPolicy, OfflineDetector,
     Penalty, Stopping, TimeIndex, TimeSeriesView,
 };
-use cpd_costs::{CostL2Mean, CostNormalMeanVar};
+use cpd_costs::CostL2Mean;
 use cpd_offline::{Pelt, PeltConfig};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
@@ -31,39 +31,33 @@ fn step_series(n: usize) -> Vec<f64> {
     values
 }
 
-fn variance_shift_series(n: usize) -> Vec<f64> {
-    let mut values = Vec::with_capacity(n);
-    let half = n / 2;
-    for i in 0..half {
-        values.push(if i % 2 == 0 { -1.0 } else { 1.0 });
-    }
-    for i in half..n {
-        values.push(if i % 2 == 0 { -5.0 } else { 5.0 });
-    }
-    values
-}
-
-fn benchmark_pelt_l2_n1e5(c: &mut Criterion) {
-    const N: usize = 100_000;
-    let values = step_series(N);
-    let view = make_view(&values, N);
+fn bench_pelt_l2(
+    c: &mut Criterion,
+    case_id: &str,
+    n: usize,
+    jump: usize,
+    min_segment_len: usize,
+    penalty: f64,
+) {
+    let values = step_series(n);
+    let view = make_view(&values, n);
     let constraints = Constraints {
-        min_segment_len: 20,
-        jump: 5,
+        min_segment_len,
+        jump,
         ..Constraints::default()
     };
     let ctx = ExecutionContext::new(&constraints);
     let detector = Pelt::new(
         CostL2Mean::default(),
         PeltConfig {
-            stopping: Stopping::Penalized(Penalty::Manual(10.0)),
+            stopping: Stopping::Penalized(Penalty::Manual(penalty)),
             params_per_segment: 2,
             cancel_check_every: 1_000,
         },
     )
     .expect("detector config should be valid");
 
-    c.bench_function("pelt_l2_n1e5", |b| {
+    c.bench_function(case_id, |b| {
         b.iter(|| {
             detector
                 .detect(black_box(&view), black_box(&ctx))
@@ -72,68 +66,25 @@ fn benchmark_pelt_l2_n1e5(c: &mut Criterion) {
     });
 }
 
-fn benchmark_pelt_l2_n1e6(c: &mut Criterion) {
+fn benchmark_pelt_l2_n1e4_d1_jump1(c: &mut Criterion) {
+    const N: usize = 10_000;
+    bench_pelt_l2(c, "pelt_l2_n1e4_d1_jump1", N, 1, 2, 10.0);
+}
+
+fn benchmark_pelt_l2_n1e5_d1_jump1(c: &mut Criterion) {
+    const N: usize = 100_000;
+    bench_pelt_l2(c, "pelt_l2_n1e5_d1_jump1", N, 1, 2, 10.0);
+}
+
+fn benchmark_pelt_l2_n1e6_d1_jump5_minseg20(c: &mut Criterion) {
     const N: usize = 1_000_000;
-    let values = step_series(N);
-    let view = make_view(&values, N);
-    let constraints = Constraints {
-        min_segment_len: 50,
-        jump: 10,
-        ..Constraints::default()
-    };
-    let ctx = ExecutionContext::new(&constraints);
-    let detector = Pelt::new(
-        CostL2Mean::default(),
-        PeltConfig {
-            stopping: Stopping::Penalized(Penalty::Manual(20.0)),
-            params_per_segment: 2,
-            cancel_check_every: 1_000,
-        },
-    )
-    .expect("detector config should be valid");
-
-    c.bench_function("pelt_l2_n1e6", |b| {
-        b.iter(|| {
-            detector
-                .detect(black_box(&view), black_box(&ctx))
-                .expect("PELT L2 benchmark detect should succeed");
-        })
-    });
-}
-
-fn benchmark_pelt_normal_n1e5(c: &mut Criterion) {
-    const N: usize = 100_000;
-    let values = variance_shift_series(N);
-    let view = make_view(&values, N);
-    let constraints = Constraints {
-        min_segment_len: 20,
-        jump: 5,
-        ..Constraints::default()
-    };
-    let ctx = ExecutionContext::new(&constraints);
-    let detector = Pelt::new(
-        CostNormalMeanVar::default(),
-        PeltConfig {
-            stopping: Stopping::Penalized(Penalty::Manual(10.0)),
-            params_per_segment: 3,
-            cancel_check_every: 1_000,
-        },
-    )
-    .expect("detector config should be valid");
-
-    c.bench_function("pelt_normal_n1e5", |b| {
-        b.iter(|| {
-            detector
-                .detect(black_box(&view), black_box(&ctx))
-                .expect("PELT Normal benchmark detect should succeed");
-        })
-    });
+    bench_pelt_l2(c, "pelt_l2_n1e6_d1_jump5_minseg20", N, 5, 20, 20.0);
 }
 
 criterion_group!(
     benches,
-    benchmark_pelt_l2_n1e5,
-    benchmark_pelt_l2_n1e6,
-    benchmark_pelt_normal_n1e5
+    benchmark_pelt_l2_n1e4_d1_jump1,
+    benchmark_pelt_l2_n1e5_d1_jump1,
+    benchmark_pelt_l2_n1e6_d1_jump5_minseg20
 );
 criterion_main!(benches);

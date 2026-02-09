@@ -95,11 +95,14 @@ jobs:
         run: |
           python3 .github/scripts/benchmark_gate.py collect \
             --workspace cpd \
-            --out cpd/nightly-benchmark.json \
-            --bench numerics_prefix \
-            --bench cost_l2 \
-            --bench offline_pelt \
-            --bench offline_binseg
+            --manifest cpd/benchmarks/mvp_a_benchmark_manifest.json \
+            --out cpd/nightly-benchmark.json
+
+      - name: Enforce absolute benchmark thresholds
+        run: |
+          python3 .github/scripts/benchmark_gate.py compare-absolute \
+            --manifest cpd/benchmarks/mvp_a_benchmark_manifest.json \
+            --current cpd/nightly-benchmark.json
 
       - name: Upload nightly benchmark report
         uses: actions/upload-artifact@v4
