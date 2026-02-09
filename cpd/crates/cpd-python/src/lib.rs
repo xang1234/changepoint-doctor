@@ -10,7 +10,7 @@ mod result_objects;
 use crate::error_map::cpd_error_to_pyerr;
 use crate::numpy_interop::{DTypePolicy, OwnedSeries, parse_numpy_series};
 use cpd_core::{
-    Constraints, CpdError, ExecutionContext, MissingPolicy,
+    CachePolicy, Constraints, CpdError, DegradationStep, ExecutionContext, MissingPolicy,
     OfflineChangePointResult as CoreOfflineChangePointResult, OfflineDetector, Penalty, ReproMode,
     Stopping,
 };
@@ -18,7 +18,7 @@ use cpd_costs::{CostL2Mean, CostNormalMeanVar};
 use cpd_offline::{BinSeg as OfflineBinSeg, BinSegConfig, Pelt as OfflinePelt, PeltConfig};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAnyMethods, PyDict, PyModule};
+use pyo3::types::{PyAnyMethods, PyDict, PyList, PyModule};
 use result_objects::{PyDiagnostics, PyOfflineChangePointResult, PyPruningStats, PySegmentStats};
 
 fn parse_sequence(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
@@ -96,6 +96,144 @@ fn parse_repro_mode(repro_mode: &str) -> PyResult<ReproMode> {
     }
 }
 
+fn required_dict_key<'py>(
+    dict: &Bound<'py, PyDict>,
+    key: &str,
+    context: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    dict.get_item(key)?.ok_or_else(|| {
+        PyValueError::new_err(format!("{context} requires key '{key}' with a valid value"))
+    })
+}
+
+fn parse_cache_policy(value: &Bound<'_, PyAny>) -> PyResult<CachePolicy> {
+    if let Ok(named) = value.extract::<String>() {
+        return match named.to_ascii_lowercase().as_str() {
+            "full" => Ok(CachePolicy::Full),
+            "budgeted" | "approximate" => Err(PyValueError::new_err(
+                "constraints.cache_policy as string only supports 'full'; use dict form for other policies",
+            )),
+            _ => Err(PyValueError::new_err(format!(
+                "unsupported constraints.cache_policy '{named}'; expected 'full' or dict with kind"
+            ))),
+        };
+    }
+
+    let dict = value
+        .downcast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("constraints.cache_policy must be a string or dict"))?;
+    let kind_obj = required_dict_key(dict, "kind", "constraints.cache_policy")?;
+    let kind: String = kind_obj
+        .extract()
+        .map_err(|_| PyTypeError::new_err("constraints.cache_policy.kind must be a string"))?;
+
+    match kind.to_ascii_lowercase().as_str() {
+        "full" => Ok(CachePolicy::Full),
+        "budgeted" => {
+            let max_bytes = required_dict_key(dict, "max_bytes", "constraints.cache_policy")?
+                .extract::<usize>()
+                .map_err(|_| {
+                    PyTypeError::new_err("constraints.cache_policy.max_bytes must be an integer")
+                })?;
+            Ok(CachePolicy::Budgeted { max_bytes })
+        }
+        "approximate" => {
+            let max_bytes = required_dict_key(dict, "max_bytes", "constraints.cache_policy")?
+                .extract::<usize>()
+                .map_err(|_| {
+                    PyTypeError::new_err("constraints.cache_policy.max_bytes must be an integer")
+                })?;
+            let error_tolerance =
+                required_dict_key(dict, "error_tolerance", "constraints.cache_policy")?
+                    .extract::<f64>()
+                    .map_err(|_| {
+                        PyTypeError::new_err(
+                            "constraints.cache_policy.error_tolerance must be a float",
+                        )
+                    })?;
+            Ok(CachePolicy::Approximate {
+                max_bytes,
+                error_tolerance,
+            })
+        }
+        _ => Err(PyValueError::new_err(format!(
+            "unsupported constraints.cache_policy.kind '{kind}'; expected one of: 'full', 'budgeted', 'approximate'"
+        ))),
+    }
+}
+
+fn parse_degradation_step(value: &Bound<'_, PyAny>) -> PyResult<DegradationStep> {
+    if let Ok(named) = value.extract::<String>() {
+        return match named.to_ascii_lowercase().as_str() {
+            "disable_uncertainty_bands" => Ok(DegradationStep::DisableUncertaintyBands),
+            _ => Err(PyValueError::new_err(format!(
+                "unsupported constraints.degradation_plan step '{named}'"
+            ))),
+        };
+    }
+
+    let dict = value.downcast::<PyDict>().map_err(|_| {
+        PyTypeError::new_err(
+            "constraints.degradation_plan entries must be strings or dicts with 'kind'",
+        )
+    })?;
+
+    let kind_obj = required_dict_key(dict, "kind", "constraints.degradation_plan step")?;
+    let kind: String = kind_obj.extract().map_err(|_| {
+        PyTypeError::new_err("constraints.degradation_plan step kind must be a string")
+    })?;
+
+    match kind.to_ascii_lowercase().as_str() {
+        "increase_jump" => {
+            let factor = required_dict_key(dict, "factor", "constraints.degradation_plan step")?
+                .extract::<usize>()
+                .map_err(|_| {
+                    PyTypeError::new_err(
+                        "constraints.degradation_plan increase_jump.factor must be an integer",
+                    )
+                })?;
+            let max_jump = required_dict_key(
+                dict,
+                "max_jump",
+                "constraints.degradation_plan step",
+            )?
+            .extract::<usize>()
+            .map_err(|_| {
+                PyTypeError::new_err(
+                    "constraints.degradation_plan increase_jump.max_jump must be an integer",
+                )
+            })?;
+            Ok(DegradationStep::IncreaseJump { factor, max_jump })
+        }
+        "disable_uncertainty_bands" => Ok(DegradationStep::DisableUncertaintyBands),
+        "switch_cache_policy" => {
+            let cache_policy =
+                required_dict_key(dict, "cache_policy", "constraints.degradation_plan step")?;
+            Ok(DegradationStep::SwitchCachePolicy(parse_cache_policy(
+                &cache_policy,
+            )?))
+        }
+        _ => Err(PyValueError::new_err(format!(
+            "unsupported constraints.degradation_plan step kind '{kind}'"
+        ))),
+    }
+}
+
+fn parse_degradation_plan(value: &Bound<'_, PyAny>) -> PyResult<Vec<DegradationStep>> {
+    if value.is_none() {
+        return Ok(vec![]);
+    }
+
+    let plan = value
+        .downcast::<PyList>()
+        .map_err(|_| PyTypeError::new_err("constraints.degradation_plan must be a list"))?;
+    let mut out = Vec::with_capacity(plan.len());
+    for step in plan.iter() {
+        out.push(parse_degradation_step(&step)?);
+    }
+    Ok(out)
+}
+
 fn resolve_stopping(pen: Option<f64>, n_bkps: Option<usize>, context: &str) -> PyResult<Stopping> {
     match (pen, n_bkps) {
         (Some(_), Some(_)) => Err(PyValueError::new_err(format!(
@@ -152,6 +290,8 @@ fn parse_constraints(constraints: Option<&Bound<'_, PyAny>>) -> PyResult<Constra
                 out.memory_budget_bytes = value_obj.extract::<Option<usize>>()?
             }
             "max_cache_bytes" => out.max_cache_bytes = value_obj.extract::<Option<usize>>()?,
+            "cache_policy" => out.cache_policy = parse_cache_policy(&value_obj)?,
+            "degradation_plan" => out.degradation_plan = parse_degradation_plan(&value_obj)?,
             "allow_algorithm_fallback" => {
                 out.allow_algorithm_fallback = value_obj.extract::<bool>()?
             }

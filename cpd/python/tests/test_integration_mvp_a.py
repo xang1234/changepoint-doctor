@@ -59,6 +59,36 @@ def test_detect_offline_matches_class_api_for_pelt_and_binseg() -> None:
     assert binseg_low.breakpoints == binseg_class.breakpoints
 
 
+def test_detect_offline_accepts_extended_constraints_surface() -> None:
+    x = _three_regime_signal()
+    result = cpd.detect_offline(
+        x,
+        detector="pelt",
+        cost="l2",
+        constraints={
+            "min_segment_len": 2,
+            "jump": 1,
+            "max_change_points": 4,
+            "max_depth": None,
+            "candidate_splits": None,
+            "time_budget_ms": None,
+            "max_cost_evals": None,
+            "memory_budget_bytes": 20_000_000,
+            "max_cache_bytes": 10_000_000,
+            "cache_policy": {"kind": "budgeted", "max_bytes": 10_000_000},
+            "degradation_plan": [
+                {"kind": "increase_jump", "factor": 2, "max_jump": 8},
+                {"kind": "disable_uncertainty_bands"},
+                {"kind": "switch_cache_policy", "cache_policy": {"kind": "full"}},
+            ],
+            "allow_algorithm_fallback": False,
+        },
+        stopping={"n_bkps": 2},
+        repro_mode="balanced",
+    )
+    assert result.breakpoints == [40, 80, 120]
+
+
 def test_detect_offline_rejects_invalid_parameters() -> None:
     x = _three_regime_signal()
 
@@ -107,3 +137,37 @@ def test_binseg_releases_gil_during_predict() -> None:
         thread.join(timeout=2.0)
 
     assert state["during_predict_ticks"] > 0
+
+
+def test_detect_offline_releases_gil_during_compute() -> None:
+    n = 100_000
+    values = np.zeros(n, dtype=np.float64)
+    values[n // 2 :] = 3.0
+
+    state = {"running": True, "in_call": False, "ticks": 0}
+
+    def worker() -> None:
+        while state["running"]:
+            if state["in_call"]:
+                state["ticks"] += 1
+            time.sleep(0)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    time.sleep(0.01)
+
+    try:
+        state["in_call"] = True
+        _ = cpd.detect_offline(
+            values,
+            detector="pelt",
+            cost="l2",
+            constraints={"min_segment_len": 50, "jump": 50, "max_change_points": 8},
+            stopping={"pen": 1.0},
+        )
+    finally:
+        state["in_call"] = False
+        state["running"] = False
+        thread.join(timeout=2.0)
+
+    assert state["ticks"] > 0
