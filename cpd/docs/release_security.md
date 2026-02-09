@@ -1,0 +1,67 @@
+# Release Security Verification
+
+This project publishes security metadata for each tagged release:
+
+- Artifact checksums: `SHA256SUMS.txt`
+- Sigstore keyless signatures and certificates: `*.sig`, `*.pem`
+- CycloneDX SBOMs:
+  - `sbom-rust-workspace.cdx.json`
+  - `sbom-crates.cdx.json`
+  - `sbom-wheels.cdx.json`
+- GitHub build provenance attestations
+
+Release assets are attached to the corresponding GitHub release tag (`v*`).
+
+## 1. Verify checksums
+
+Download release assets and run:
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
+Every line must report `OK`.
+
+## 2. Verify Sigstore keyless signatures
+
+Install [cosign](https://github.com/sigstore/cosign), then verify each signed file:
+
+```bash
+REPO="OWNER/REPO"
+for artifact in dist/* crates/*.crate sbom/*.json checksums/SHA256SUMS.txt; do
+  base="$(basename "$artifact")"
+  cosign verify-blob \
+    --signature "signatures/${base}.sig" \
+    --certificate "signatures/${base}.pem" \
+    --certificate-identity-regexp "^https://github.com/${REPO}/.github/workflows/release.yml@refs/(heads|tags)/.*$" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    "$artifact"
+done
+```
+
+Verification succeeds only if signature, certificate identity, and OIDC issuer all match.
+
+## 3. Inspect SBOMs
+
+SBOMs are CycloneDX JSON files. You can inspect them directly with `jq` or import into an SBOM tool.
+
+```bash
+jq '.metadata.component.name, .components | length' sbom/sbom-crates.cdx.json
+```
+
+## 4. Verify build provenance attestation
+
+GitHub release builds publish SLSA provenance subjects for:
+
+- `dist/*`
+- `crates/*.crate`
+- `sbom/*.json`
+- `checksums/SHA256SUMS.txt`
+
+Use GitHub's attestation UI for the workflow run, or the GitHub CLI:
+
+```bash
+gh attestation verify <artifact-path-or-uri> --repo OWNER/REPO
+```
+
+Refer to the workflow definition in `.github/workflows/release.yml` for exact subject paths.

@@ -1,7 +1,20 @@
 name: release
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to create/update (e.g., v0.1.0)"
+        required: true
+        type: string
+      publish_to_pypi:
+        description: "Publish distributions to PyPI"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -77,9 +90,53 @@ jobs:
           path: cpd/python/dist/*.tar.gz
           if-no-files-found: error
 
+  build-crates:
+    name: release-crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cpd
+
+      - name: Build crate package artifacts
+        run: |
+          set -euo pipefail
+
+          crates=(
+            cpd-core
+            cpd-costs
+            cpd-preprocess
+            cpd-offline
+            cpd-online
+            cpd-doctor
+            cpd-python
+            cpd-cli
+            cpd-bench
+            cpd-eval
+          )
+
+          for crate in "${crates[@]}"; do
+            cargo package --manifest-path "cpd/crates/${crate}/Cargo.toml" --allow-dirty
+          done
+
+      - name: Upload crate package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-crates
+          path: cpd/target/package/*.crate
+          if-no-files-found: error
+
   sign-sbom-attest:
     name: sign-sbom-attest
-    needs: [build-wheels, build-sdist]
+    needs: [build-wheels, build-sdist, build-crates]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -104,6 +161,12 @@ jobs:
           name: release-sdist
           path: release-artifacts/dist
 
+      - name: Download crate package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-crates
+          path: release-artifacts/crates
+
       - name: Install cargo-cyclonedx
         working-directory: cpd
         run: cargo install --locked cargo-cyclonedx
@@ -111,8 +174,8 @@ jobs:
       - name: Generate Rust SBOM
         run: |
           mkdir -p release-artifacts/sbom
-          if cargo cyclonedx --manifest-path cpd/Cargo.toml --workspace --format json --output-file release-artifacts/sbom/sbom-rust.cdx.json; then
-            echo "Generated Rust SBOM at release-artifacts/sbom/sbom-rust.cdx.json"
+          if cargo cyclonedx --manifest-path cpd/Cargo.toml --workspace --format json --output-file release-artifacts/sbom/sbom-rust-workspace.cdx.json; then
+            echo "Generated Rust SBOM at release-artifacts/sbom/sbom-rust-workspace.cdx.json"
           else
             echo "Primary cargo cyclonedx invocation failed; retrying with default output."
             cargo cyclonedx --manifest-path cpd/Cargo.toml --workspace --format json
@@ -121,7 +184,7 @@ jobs:
               echo "Unable to locate CycloneDX output" >&2
               exit 1
             fi
-            cp "${CANDIDATE}" release-artifacts/sbom/sbom-rust.cdx.json
+            cp "${CANDIDATE}" release-artifacts/sbom/sbom-rust-workspace.cdx.json
           fi
 
       - name: Install syft
@@ -133,6 +196,27 @@ jobs:
         run: |
           syft packages release-artifacts/dist -o cyclonedx-json=release-artifacts/sbom/sbom-wheels.cdx.json
 
+      - name: Generate crate artifact SBOM
+        run: |
+          syft packages release-artifacts/crates -o cyclonedx-json=release-artifacts/sbom/sbom-crates.cdx.json
+
+      - name: Generate checksum manifest
+        run: |
+          mkdir -p release-artifacts/checksums
+
+          (
+            cd release-artifacts
+            shopt -s nullglob
+            files=(dist/* crates/*.crate sbom/*.json)
+
+            if [[ ${#files[@]} -eq 0 ]]; then
+              echo "No release files available for checksums" >&2
+              exit 1
+            fi
+
+            sha256sum "${files[@]}" > checksums/SHA256SUMS.txt
+          )
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.7.0
 
@@ -141,7 +225,12 @@ jobs:
           mkdir -p release-artifacts/signatures
           shopt -s nullglob
 
-          files=(release-artifacts/dist/* release-artifacts/sbom/*.json)
+          files=(
+            release-artifacts/dist/*
+            release-artifacts/crates/*.crate
+            release-artifacts/sbom/*.json
+            release-artifacts/checksums/SHA256SUMS.txt
+          )
           if [[ ${#files[@]} -eq 0 ]]; then
             echo "No artifacts found to sign" >&2
             exit 1
@@ -167,11 +256,112 @@ jobs:
         with:
           subject-path: |
             release-artifacts/dist/*
+            release-artifacts/crates/*.crate
             release-artifacts/sbom/*.json
+            release-artifacts/checksums/SHA256SUMS.txt
+
+  verify-release-bundle:
+    name: verify-release-bundle
+    needs: sign-sbom-attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download signed release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts-signed
+          path: release-artifacts
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Verify checksums
+        run: |
+          (
+            cd release-artifacts
+            sha256sum -c checksums/SHA256SUMS.txt
+          )
+
+      - name: Verify keyless signatures
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          files=(
+            release-artifacts/dist/*
+            release-artifacts/crates/*.crate
+            release-artifacts/sbom/*.json
+            release-artifacts/checksums/SHA256SUMS.txt
+          )
+
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No artifacts found to verify" >&2
+            exit 1
+          fi
+
+          for artifact in "${files[@]}"; do
+            base="$(basename "${artifact}")"
+            signature="release-artifacts/signatures/${base}.sig"
+            certificate="release-artifacts/signatures/${base}.pem"
+
+            if [[ ! -f "${signature}" ]]; then
+              echo "Missing signature for ${artifact}" >&2
+              exit 1
+            fi
+
+            if [[ ! -f "${certificate}" ]]; then
+              echo "Missing certificate for ${artifact}" >&2
+              exit 1
+            fi
+
+            cosign verify-blob \
+              --signature "${signature}" \
+              --certificate "${certificate}" \
+              --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/(heads|tags)/.*$" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "${artifact}"
+          done
+
+  publish-github-release:
+    name: publish-github-release
+    needs: verify-release-bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.release_tag }}
+
+    steps:
+      - name: Download signed release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts-signed
+          path: release-artifacts
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Release ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release-artifacts/dist/*
+            release-artifacts/crates/*.crate
+            release-artifacts/sbom/*.json
+            release-artifacts/checksums/SHA256SUMS.txt
+            release-artifacts/signatures/*.sig
+            release-artifacts/signatures/*.pem
 
   publish-pypi:
     name: publish-pypi
-    needs: sign-sbom-attest
+    if: ${{ github.event_name == 'push' || github.event.inputs.publish_to_pypi == 'true' }}
+    needs: verify-release-bundle
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

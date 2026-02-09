@@ -33,3 +33,7 @@ Temporary ignores are allowed only with:
 - an owning bead issue
 
 Expired ignores must be removed or renewed with a fresh justification.
+
+## Release Artifact Verification
+
+For release signing, checksums, SBOM inspection, and provenance verification, see `cpd/docs/release_security.md`.
