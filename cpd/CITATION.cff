@@ -1,0 +1,66 @@
+cff-version: 1.2.0
+title: cpd-rs
+message: >-
+  If you use cpd-rs in academic work, please cite this software and the
+  algorithm papers listed below.
+type: software
+authors:
+  - name: cpd-rs contributors
+version: 0.1.0
+license: MIT OR Apache-2.0
+repository-code: https://github.com/cpd-rs/cpd-rs
+references:
+  - type: article
+    title: Bayesian Online Changepoint Detection
+    authors:
+      - family-names: Adams
+        given-names: Ryan Prescott
+      - family-names: MacKay
+        given-names: David J. C.
+    year: 2007
+    journal: arXiv
+    volume: abs/0710.3742
+    url: https://arxiv.org/abs/0710.3742
+  - type: article
+    title: >-
+      Optimal Detection of Changepoints With a Linear Computational Cost
+    authors:
+      - family-names: Killick
+        given-names: Rebecca
+      - family-names: Fearnhead
+        given-names: Paul
+      - family-names: Eckley
+        given-names: Idris A.
+    year: 2012
+    journal: Journal of the American Statistical Association
+    volume: 107
+    issue: 500
+    start: 1590
+    end: 1598
+    doi: 10.1080/01621459.2012.737745
+  - type: article
+    title: Wild Binary Segmentation for Multiple Change-Point Detection
+    authors:
+      - family-names: Fryzlewicz
+        given-names: Piotr
+    year: 2014
+    journal: The Annals of Statistics
+    volume: 42
+    issue: 6
+    start: 2243
+    end: 2281
+    doi: 10.1214/14-AOS1245
+  - type: article
+    title: Selective review of offline change point detection methods
+    authors:
+      - family-names: Truong
+        given-names: Charles
+      - family-names: Oudre
+        given-names: Laurent
+      - family-names: Vayatis
+        given-names: Nicolas
+    year: 2020
+    journal: Signal Processing
+    volume: 167
+    start: 107299
+    doi: 10.1016/j.sigpro.2019.107299

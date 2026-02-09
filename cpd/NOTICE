@@ -1,0 +1,21 @@
+cpd-rs
+Copyright (c) 2026 cpd-rs contributors
+
+This project is available under a dual license:
+- MIT (see LICENSE-MIT)
+- Apache License 2.0 (see LICENSE-APACHE)
+
+Attribution and upstream inspiration
+
+This repository includes clean-room reimplementations inspired by public papers
+and algorithm descriptions and informed by prior open-source projects:
+
+- ruptures (BSD-2-Clause): change-point detection reference implementations and
+  API design inspiration
+- bayesian_changepoint_detection (MIT): BOCPD-related formulation and examples
+
+No source code is copied directly from upstream repositories unless license
+terms are complied with and attribution requirements are preserved.
+
+See docs/clean_room_policy.md for project clean-room and attribution policy,
+including algorithm-to-paper traceability expectations.

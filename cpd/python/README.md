@@ -2,6 +2,9 @@
 
 `cpd-rs` exposes fast offline change-point detection from Rust into Python.
 
+For citation and provenance policy, see [`../CITATION.cff`](../CITATION.cff)
+and [`../docs/clean_room_policy.md`](../docs/clean_room_policy.md).
+
 ## Install
 
 For local development from this repository:

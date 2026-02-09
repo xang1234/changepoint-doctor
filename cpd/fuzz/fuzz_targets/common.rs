@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use cpd_core::{MissingPolicy, Penalty, Stopping};
 
 pub const MAX_VALUE_LEN: usize = 2048;
