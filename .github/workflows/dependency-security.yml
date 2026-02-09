@@ -1,0 +1,66 @@
+name: dependency-security
+
+on:
+  pull_request:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: cpd
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cpd
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: Unit test audit gate script
+        run: python3 -m unittest discover -s ../.github/scripts/tests -p 'test_*.py'
+
+      - name: Generate cargo-audit report
+        run: cargo audit --json > audit-report.json
+
+      - name: Fail on high/critical advisories
+        run: python3 ../.github/scripts/audit_gate.py audit-report.json
+
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: cpd
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cpd
+
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+
+      - name: Run cargo-deny policy checks
+        run: cargo deny check licenses bans sources --manifest-path Cargo.toml
