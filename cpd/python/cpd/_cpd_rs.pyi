@@ -124,6 +124,7 @@ def detect_offline(
     cost: str = "l2",
     constraints: dict[str, Any] | None = None,
     stopping: dict[str, Any] | None = None,
+    preprocess: dict[str, Any] | None = None,
     repro_mode: str = "balanced",
     return_diagnostics: bool = True,
 ) -> OfflineChangePointResult: ...

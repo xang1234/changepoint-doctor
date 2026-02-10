@@ -102,6 +102,12 @@ def test_detect_offline_rejects_invalid_parameters() -> None:
         cpd.detect_offline(x, constraints={"not_a_real_key": 1}, stopping={"n_bkps": 2})
 
 
+def test_detect_offline_rejects_preprocess_without_feature() -> None:
+    x = _three_regime_signal()
+    with pytest.raises(ValueError, match="preprocess feature"):
+        cpd.detect_offline(x, stopping={"n_bkps": 2}, preprocess={"winsorize": {}})
+
+
 def test_detect_offline_error_paths_are_clear() -> None:
     with pytest.raises((ValueError, RuntimeError)):
         cpd.detect_offline(np.array([], dtype=np.float64), stopping={"n_bkps": 1})

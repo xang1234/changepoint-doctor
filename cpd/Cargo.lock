@@ -207,6 +207,7 @@ dependencies = [
  "cpd-doctor",
  "cpd-offline",
  "cpd-online",
+ "cpd-preprocess",
  "numpy",
  "pyo3",
  "serde_json",

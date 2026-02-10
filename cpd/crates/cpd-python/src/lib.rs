@@ -14,10 +14,15 @@ use crate::numpy_interop::{DTypePolicy, OwnedSeries, parse_numpy_series};
 use cpd_core::{
     CachePolicy, Constraints, CpdError, DegradationStep, ExecutionContext, MissingPolicy,
     OfflineChangePointResult as CoreOfflineChangePointResult, OfflineDetector, Penalty, ReproMode,
-    Stopping,
+    Stopping, TimeSeriesView,
 };
 use cpd_costs::{CostL2Mean, CostNormalMeanVar};
 use cpd_offline::{BinSeg as OfflineBinSeg, BinSegConfig, Pelt as OfflinePelt, PeltConfig};
+#[cfg(feature = "preprocess")]
+use cpd_preprocess::{
+    DeseasonalizeConfig, DeseasonalizeMethod, DetrendConfig, DetrendMethod, PreprocessConfig,
+    PreprocessPipeline, RobustScaleConfig, WinsorizeConfig,
+};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyDict, PyList, PyModule};
@@ -399,15 +404,283 @@ fn parse_stopping(stopping: Option<&Bound<'_, PyAny>>) -> PyResult<Stopping> {
     }
 }
 
-fn detect_with_spec(
+#[cfg(feature = "preprocess")]
+fn parse_preprocess(preprocess: Option<&Bound<'_, PyAny>>) -> PyResult<Option<PreprocessPipeline>> {
+    let Some(preprocess) = preprocess else {
+        return Ok(None);
+    };
+    if preprocess.is_none() {
+        return Ok(None);
+    }
+
+    let dict = preprocess
+        .downcast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("preprocess must be a dict"))?;
+    let mut config = PreprocessConfig::default();
+
+    for (key_obj, value_obj) in dict.iter() {
+        let key: String = key_obj
+            .extract()
+            .map_err(|_| PyTypeError::new_err("preprocess keys must be strings"))?;
+        match key.as_str() {
+            "detrend" => config.detrend = parse_detrend_config(&value_obj)?,
+            "deseasonalize" => config.deseasonalize = parse_deseasonalize_config(&value_obj)?,
+            "winsorize" => config.winsorize = parse_winsorize_config(&value_obj)?,
+            "robust_scale" => config.robust_scale = parse_robust_scale_config(&value_obj)?,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "unsupported preprocess key '{key}'"
+                )));
+            }
+        }
+    }
+
+    let has_stage = config.detrend.is_some()
+        || config.deseasonalize.is_some()
+        || config.winsorize.is_some()
+        || config.robust_scale.is_some();
+    if !has_stage {
+        return Ok(None);
+    }
+
+    PreprocessPipeline::new(config)
+        .map(Some)
+        .map_err(cpd_error_to_pyerr)
+}
+
+#[cfg(not(feature = "preprocess"))]
+fn parse_preprocess(preprocess: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+    if let Some(preprocess) = preprocess
+        && !preprocess.is_none()
+    {
+        return Err(PyValueError::new_err(
+            "preprocess requires cpd-python built with preprocess feature; rebuild with --features extension-module,preprocess",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "preprocess")]
+fn parse_detrend_config(value: &Bound<'_, PyAny>) -> PyResult<Option<DetrendConfig>> {
+    if value.is_none() {
+        return Ok(None);
+    }
+
+    let dict = value
+        .downcast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("preprocess.detrend must be a dict or None"))?;
+
+    let mut method: Option<String> = None;
+    let mut degree: Option<usize> = None;
+
+    for (key_obj, value_obj) in dict.iter() {
+        let key: String = key_obj
+            .extract()
+            .map_err(|_| PyTypeError::new_err("preprocess.detrend keys must be strings"))?;
+        match key.as_str() {
+            "method" => {
+                method = Some(value_obj.extract::<String>().map_err(|_| {
+                    PyTypeError::new_err("preprocess.detrend.method must be a string")
+                })?)
+            }
+            "degree" => {
+                degree = Some(value_obj.extract::<usize>().map_err(|_| {
+                    PyTypeError::new_err("preprocess.detrend.degree must be an integer")
+                })?)
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "unsupported preprocess.detrend key '{key}'"
+                )));
+            }
+        }
+    }
+
+    let method = method.ok_or_else(|| {
+        PyValueError::new_err("preprocess.detrend requires key 'method' with a valid value")
+    })?;
+
+    let method = match method.to_ascii_lowercase().as_str() {
+        "linear" => {
+            if degree.is_some() {
+                return Err(PyValueError::new_err(
+                    "preprocess.detrend.method='linear' does not accept key 'degree'",
+                ));
+            }
+            DetrendMethod::Linear
+        }
+        "polynomial" => {
+            let degree = degree.ok_or_else(|| {
+                PyValueError::new_err(
+                    "preprocess.detrend.method='polynomial' requires key 'degree'",
+                )
+            })?;
+            DetrendMethod::Polynomial { degree }
+        }
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "unsupported preprocess.detrend.method '{method}'; expected one of: 'linear', 'polynomial'"
+            )));
+        }
+    };
+
+    Ok(Some(DetrendConfig { method }))
+}
+
+#[cfg(feature = "preprocess")]
+fn parse_deseasonalize_config(value: &Bound<'_, PyAny>) -> PyResult<Option<DeseasonalizeConfig>> {
+    if value.is_none() {
+        return Ok(None);
+    }
+
+    let dict = value
+        .downcast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("preprocess.deseasonalize must be a dict or None"))?;
+
+    let mut method: Option<String> = None;
+    let mut period: Option<usize> = None;
+
+    for (key_obj, value_obj) in dict.iter() {
+        let key: String = key_obj
+            .extract()
+            .map_err(|_| PyTypeError::new_err("preprocess.deseasonalize keys must be strings"))?;
+        match key.as_str() {
+            "method" => {
+                method = Some(value_obj.extract::<String>().map_err(|_| {
+                    PyTypeError::new_err("preprocess.deseasonalize.method must be a string")
+                })?)
+            }
+            "period" => {
+                period = Some(value_obj.extract::<usize>().map_err(|_| {
+                    PyTypeError::new_err("preprocess.deseasonalize.period must be an integer")
+                })?)
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "unsupported preprocess.deseasonalize key '{key}'"
+                )));
+            }
+        }
+    }
+
+    let method = method.ok_or_else(|| {
+        PyValueError::new_err("preprocess.deseasonalize requires key 'method' with a valid value")
+    })?;
+    let period = period.ok_or_else(|| {
+        PyValueError::new_err("preprocess.deseasonalize requires key 'period' with a valid value")
+    })?;
+
+    let method = match method.to_ascii_lowercase().as_str() {
+        "differencing" => DeseasonalizeMethod::Differencing { period },
+        "stl_like" => DeseasonalizeMethod::StlLike { period },
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "unsupported preprocess.deseasonalize.method '{method}'; expected one of: 'differencing', 'stl_like'"
+            )));
+        }
+    };
+
+    Ok(Some(DeseasonalizeConfig { method }))
+}
+
+#[cfg(feature = "preprocess")]
+fn parse_winsorize_config(value: &Bound<'_, PyAny>) -> PyResult<Option<WinsorizeConfig>> {
+    if value.is_none() {
+        return Ok(None);
+    }
+
+    let dict = value
+        .downcast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("preprocess.winsorize must be a dict or None"))?;
+
+    let mut config = WinsorizeConfig::default();
+    for (key_obj, value_obj) in dict.iter() {
+        let key: String = key_obj
+            .extract()
+            .map_err(|_| PyTypeError::new_err("preprocess.winsorize keys must be strings"))?;
+        match key.as_str() {
+            "lower_quantile" => {
+                config.lower_quantile = value_obj.extract::<f64>().map_err(|_| {
+                    PyTypeError::new_err("preprocess.winsorize.lower_quantile must be a float")
+                })?;
+            }
+            "upper_quantile" => {
+                config.upper_quantile = value_obj.extract::<f64>().map_err(|_| {
+                    PyTypeError::new_err("preprocess.winsorize.upper_quantile must be a float")
+                })?;
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "unsupported preprocess.winsorize key '{key}'"
+                )));
+            }
+        }
+    }
+
+    Ok(Some(config))
+}
+
+#[cfg(feature = "preprocess")]
+fn parse_robust_scale_config(value: &Bound<'_, PyAny>) -> PyResult<Option<RobustScaleConfig>> {
+    if value.is_none() {
+        return Ok(None);
+    }
+
+    let dict = value
+        .downcast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("preprocess.robust_scale must be a dict or None"))?;
+
+    let mut config = RobustScaleConfig::default();
+    for (key_obj, value_obj) in dict.iter() {
+        let key: String = key_obj
+            .extract()
+            .map_err(|_| PyTypeError::new_err("preprocess.robust_scale keys must be strings"))?;
+        match key.as_str() {
+            "mad_epsilon" => {
+                config.mad_epsilon = value_obj.extract::<f64>().map_err(|_| {
+                    PyTypeError::new_err("preprocess.robust_scale.mad_epsilon must be a float")
+                })?;
+            }
+            "normal_consistency" => {
+                config.normal_consistency = value_obj.extract::<f64>().map_err(|_| {
+                    PyTypeError::new_err(
+                        "preprocess.robust_scale.normal_consistency must be a float",
+                    )
+                })?;
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "unsupported preprocess.robust_scale key '{key}'"
+                )));
+            }
+        }
+    }
+
+    Ok(Some(config))
+}
+
+#[cfg(feature = "preprocess")]
+fn preprocess_notes_from_reports(reports: &[cpd_preprocess::StepReport]) -> Vec<String> {
+    reports
+        .iter()
+        .map(|report| {
+            if report.notes.is_empty() {
+                format!("preprocess:{} applied", report.step)
+            } else {
+                format!("preprocess:{} {}", report.step, report.notes.join("; "))
+            }
+        })
+        .collect()
+}
+
+fn detect_with_view(
     detector: PyDetectorKind,
     model: PyCostModel,
-    series: &OwnedSeries,
+    view: &TimeSeriesView<'_>,
     constraints: &Constraints,
     stopping: Stopping,
     repro_mode: ReproMode,
 ) -> Result<CoreOfflineChangePointResult, CpdError> {
-    let view = series.view()?;
     let ctx = ExecutionContext::new(constraints).with_repro_mode(repro_mode);
 
     match (detector, model) {
@@ -418,7 +691,7 @@ fn detect_with_spec(
                 cancel_check_every: 1000,
             };
             let detector = OfflinePelt::new(CostL2Mean::new(repro_mode), config)?;
-            detector.detect(&view, &ctx)
+            detector.detect(view, &ctx)
         }
         (PyDetectorKind::Pelt, PyCostModel::Normal) => {
             let config = PeltConfig {
@@ -427,7 +700,7 @@ fn detect_with_spec(
                 cancel_check_every: 1000,
             };
             let detector = OfflinePelt::new(CostNormalMeanVar::new(repro_mode), config)?;
-            detector.detect(&view, &ctx)
+            detector.detect(view, &ctx)
         }
         (PyDetectorKind::Binseg, PyCostModel::L2) => {
             let config = BinSegConfig {
@@ -436,7 +709,7 @@ fn detect_with_spec(
                 cancel_check_every: 1000,
             };
             let detector = OfflineBinSeg::new(CostL2Mean::new(repro_mode), config)?;
-            detector.detect(&view, &ctx)
+            detector.detect(view, &ctx)
         }
         (PyDetectorKind::Binseg, PyCostModel::Normal) => {
             let config = BinSegConfig {
@@ -445,9 +718,21 @@ fn detect_with_spec(
                 cancel_check_every: 1000,
             };
             let detector = OfflineBinSeg::new(CostNormalMeanVar::new(repro_mode), config)?;
-            detector.detect(&view, &ctx)
+            detector.detect(view, &ctx)
         }
     }
+}
+
+fn detect_with_spec(
+    detector: PyDetectorKind,
+    model: PyCostModel,
+    series: &OwnedSeries,
+    constraints: &Constraints,
+    stopping: Stopping,
+    repro_mode: ReproMode,
+) -> Result<CoreOfflineChangePointResult, CpdError> {
+    let view = series.view()?;
+    detect_with_view(detector, model, &view, constraints, stopping, repro_mode)
 }
 
 #[cfg(feature = "fuzzing")]
@@ -692,7 +977,7 @@ impl PyBinseg {
 /// Low-level power-user API for fully-specified offline detection.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(signature = (x, *, detector = "pelt", cost = "l2", constraints = None, stopping = None, repro_mode = "balanced", return_diagnostics = true))]
+#[pyo3(signature = (x, *, detector = "pelt", cost = "l2", constraints = None, stopping = None, preprocess = None, repro_mode = "balanced", return_diagnostics = true))]
 fn detect_offline(
     py: Python<'_>,
     x: &Bound<'_, PyAny>,
@@ -700,6 +985,7 @@ fn detect_offline(
     cost: &str,
     constraints: Option<&Bound<'_, PyAny>>,
     stopping: Option<&Bound<'_, PyAny>>,
+    preprocess: Option<&Bound<'_, PyAny>>,
     repro_mode: &str,
     return_diagnostics: bool,
 ) -> PyResult<PyOfflineChangePointResult> {
@@ -707,18 +993,54 @@ fn detect_offline(
     let cost = PyCostModel::parse(cost)?;
     let constraints = parse_constraints(constraints)?;
     let stopping = parse_stopping(stopping)?;
+    #[cfg(feature = "preprocess")]
+    let preprocess_pipeline = parse_preprocess(preprocess)?;
+    #[cfg(not(feature = "preprocess"))]
+    parse_preprocess(preprocess)?;
     let repro_mode = parse_repro_mode(repro_mode)?;
     let owned = parse_owned_series(py, x)?;
 
-    let mut result = py
+    #[cfg(feature = "preprocess")]
+    let (mut result, preprocess_notes) = py
         .allow_threads(|| {
-            detect_with_spec(detector, cost, &owned, &constraints, stopping, repro_mode)
+            let view = owned.view()?;
+            if let Some(pipeline) = preprocess_pipeline.as_ref() {
+                let preprocessed = pipeline.apply(&view)?;
+                let notes = preprocess_notes_from_reports(preprocessed.reports());
+                let preprocessed_view = preprocessed.as_view()?;
+                let result = detect_with_view(
+                    detector,
+                    cost,
+                    &preprocessed_view,
+                    &constraints,
+                    stopping,
+                    repro_mode,
+                )?;
+                Ok((result, notes))
+            } else {
+                let result =
+                    detect_with_view(detector, cost, &view, &constraints, stopping, repro_mode)?;
+                Ok((result, vec![]))
+            }
+        })
+        .map_err(cpd_error_to_pyerr)?;
+
+    #[cfg(not(feature = "preprocess"))]
+    let (mut result, preprocess_notes): (CoreOfflineChangePointResult, Vec<String>) = py
+        .allow_threads(|| {
+            let result =
+                detect_with_spec(detector, cost, &owned, &constraints, stopping, repro_mode)?;
+            Ok((result, vec![]))
         })
         .map_err(cpd_error_to_pyerr)?;
 
     if !return_diagnostics {
         result.diagnostics.notes.clear();
         result.diagnostics.warnings.clear();
+    }
+
+    for note in preprocess_notes {
+        result.diagnostics.notes.push(note);
     }
 
     for note in owned.diagnostics() {
@@ -979,6 +1301,96 @@ mod tests {
                 .extract()
                 .expect("low breakpoints should extract");
             assert_eq!(class_breakpoints, low_breakpoints);
+        });
+    }
+
+    #[test]
+    #[cfg(not(feature = "preprocess"))]
+    fn detect_offline_rejects_preprocess_without_feature() {
+        Python::with_gil(|py| {
+            let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
+            _cpd_rs(&module).expect("module registration should succeed");
+
+            let locals = PyDict::new_bound(py);
+            locals
+                .set_item("cpd_rs", &module)
+                .expect("locals should accept module");
+            py.run_bound(
+                "import numpy as np\nx = np.array([0.,0.,0.,0.,10.,10.,10.,10.], dtype=np.float64)\ntry:\n    cpd_rs.detect_offline(x, detector='pelt', cost='l2', stopping={'n_bkps': 1}, preprocess={'winsorize': {}})\n    raise AssertionError('expected preprocess feature error')\nexcept ValueError as exc:\n    assert 'preprocess feature' in str(exc)",
+                None,
+                Some(&locals),
+            )
+            .expect("preprocess should require feature flag");
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "preprocess")]
+    fn detect_offline_applies_preprocess_and_emits_notes() {
+        Python::with_gil(|py| {
+            let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
+            _cpd_rs(&module).expect("module registration should succeed");
+
+            let locals = PyDict::new_bound(py);
+            locals
+                .set_item("cpd_rs", &module)
+                .expect("locals should accept module");
+            py.run_bound(
+                "import numpy as np\nx = np.array([0.,0.,0.,0.,10.,10.,10.,10.], dtype=np.float64)\nresult = cpd_rs.detect_offline(x, detector='pelt', cost='l2', stopping={'n_bkps': 1}, preprocess={'winsorize': {}, 'robust_scale': {}})",
+                None,
+                Some(&locals),
+            )
+            .expect("detect_offline with preprocess should succeed");
+
+            let result = locals
+                .get_item("result")
+                .expect("locals lookup should succeed")
+                .expect("result should exist");
+            let breakpoints: Vec<usize> = result
+                .getattr("breakpoints")
+                .expect("breakpoints attribute should exist")
+                .extract()
+                .expect("breakpoints should extract");
+            assert_eq!(breakpoints, vec![4, 8]);
+
+            let diagnostics = result
+                .getattr("diagnostics")
+                .expect("diagnostics should exist");
+            let notes: Vec<String> = diagnostics
+                .getattr("notes")
+                .expect("notes should exist")
+                .extract()
+                .expect("notes should extract");
+            assert!(
+                notes
+                    .iter()
+                    .any(|note| note.starts_with("preprocess:winsorize"))
+            );
+            assert!(
+                notes
+                    .iter()
+                    .any(|note| note.starts_with("preprocess:robust_scale"))
+            );
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "preprocess")]
+    fn detect_offline_rejects_invalid_preprocess_shape() {
+        Python::with_gil(|py| {
+            let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
+            _cpd_rs(&module).expect("module registration should succeed");
+
+            let locals = PyDict::new_bound(py);
+            locals
+                .set_item("cpd_rs", &module)
+                .expect("locals should accept module");
+            py.run_bound(
+                "import numpy as np\nx = np.array([0.,0.,0.,0.,10.,10.,10.,10.], dtype=np.float64)\ntry:\n    cpd_rs.detect_offline(x, detector='pelt', cost='l2', stopping={'n_bkps': 1}, preprocess={'unknown_stage': {}})\n    raise AssertionError('expected unsupported preprocess key')\nexcept ValueError as exc:\n    assert \"unsupported preprocess key 'unknown_stage'\" in str(exc)\n\ntry:\n    cpd_rs.detect_offline(x, detector='pelt', cost='l2', stopping={'n_bkps': 1}, preprocess={'detrend': {'method': 'bad'}})\n    raise AssertionError('expected unsupported preprocess method')\nexcept ValueError as exc:\n    assert 'unsupported preprocess.detrend.method' in str(exc)",
+                None,
+                Some(&locals),
+            )
+            .expect("invalid preprocess shape should fail clearly");
         });
     }
 

@@ -19,7 +19,7 @@ maturin develop --release --manifest-path ../crates/cpd-python/Cargo.toml
 
 - `cpd.Pelt`: high-level PELT detector.
 - `cpd.Binseg`: high-level Binary Segmentation detector.
-- `cpd.detect_offline`: low-level API for explicit detector/cost/constraints/stopping selection.
+- `cpd.detect_offline`: low-level API for explicit detector/cost/constraints/stopping/preprocess selection.
 - `cpd.OfflineChangePointResult`: typed result object with breakpoints and diagnostics.
 
 ## Quickstart
@@ -46,6 +46,7 @@ low = cpd.detect_offline(
     cost="l2",
     constraints={"min_segment_len": 2},
     stopping={"n_bkps": 2},
+    preprocess={"winsorize": {}, "robust_scale": {}},  # optional; requires preprocess feature
 )
 ```
 
@@ -89,7 +90,7 @@ Fix: rebuild via `maturin develop --release` in the active environment.
 - `Binseg(model="l2"|"normal", min_segment_len, jump, max_change_points, max_depth)`
   - `.fit(x)` -> detector
   - `.predict(pen=..., n_bkps=...)` -> `OfflineChangePointResult`
-- `detect_offline(x, detector, cost, constraints, stopping, repro_mode, return_diagnostics)`
+- `detect_offline(x, detector, cost, constraints, stopping, preprocess, repro_mode, return_diagnostics)`
 - `OfflineChangePointResult`
   - fields: `breakpoints`, `change_points`, `scores`, `segments`, `diagnostics`
   - helper: `to_json()` (`from_json(...)` is planned and not yet implemented)

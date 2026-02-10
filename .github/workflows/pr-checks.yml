@@ -237,6 +237,12 @@ jobs:
           PYTHON_BIN=$(python -c "import sys; print(sys.executable)")
           PYO3_PYTHON="${PYTHON_BIN}" cargo test -p cpd-python --lib
 
+      - name: Run cpd-python preprocess-feature Rust lib tests
+        working-directory: cpd
+        run: |
+          PYTHON_BIN=$(python -c "import sys; print(sys.executable)")
+          PYO3_PYTHON="${PYTHON_BIN}" cargo test -p cpd-python --features preprocess --lib
+
       - name: Run serde fixture regression tests
         working-directory: cpd
         run: |

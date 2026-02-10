@@ -23,7 +23,7 @@ kernel = ["cpd-doctor/kernel"]
 kernel-approx = ["cpd-doctor/kernel-approx"]
 blas = ["cpd-doctor/blas"]
 gp = ["cpd-doctor/gp"]
-preprocess = ["cpd-doctor/preprocess"]
+preprocess = ["cpd-doctor/preprocess", "dep:cpd-preprocess"]
 repro-strict = ["cpd-doctor/repro-strict"]
 
 [dependencies]
@@ -32,6 +32,7 @@ cpd-offline = { path = "../cpd-offline" }
 cpd-costs = { path = "../cpd-costs" }
 cpd-online = { path = "../cpd-online" }
 cpd-doctor = { path = "../cpd-doctor" }
+cpd-preprocess = { path = "../cpd-preprocess", optional = true, features = ["preprocess"] }
 pyo3 = { version = "0.22", features = ["abi3-py39", "auto-initialize"] }
 numpy = "0.22"
 serde_json = { version = "1", optional = true }

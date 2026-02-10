@@ -47,6 +47,7 @@ low_level = cpd.detect_offline(
         "max_change_points": 4,
     },
     stopping={"n_bkps": 2},
+    preprocess={"winsorize": {}, "robust_scale": {}},  # optional; requires preprocess feature
     repro_mode="balanced",
     return_diagnostics=True,
 )
