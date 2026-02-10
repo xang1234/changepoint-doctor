@@ -44,7 +44,7 @@ jobs:
 
       - name: Build wheel
         working-directory: cpd/python
-        run: maturin build --release --manifest-path ../crates/cpd-python/Cargo.toml --features extension-module --interpreter python
+        run: maturin build --release --interpreter python
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4

@@ -44,7 +44,7 @@ jobs:
       - name: Install wheel
         run: |
           python -m pip install --upgrade pip
-          python -m pip install wheelhouse/*.whl
+          python -c "from pathlib import Path; import subprocess, sys; wheels = sorted(Path('wheelhouse').glob('*.whl')); wheel = wheels[0] if len(wheels) == 1 else None; wheel is not None or sys.exit(f'expected exactly one wheel artifact, found {len(wheels)}: {[str(w) for w in wheels]}'); subprocess.check_call([sys.executable, '-m', 'pip', 'install', str(wheel)])"
 
       - name: Import smoke test
         run: >

@@ -244,8 +244,21 @@ jobs:
       - name: Build Python extension
         run: |
           python -m pip install --upgrade pip maturin numpy pytest
-          maturin build --release --manifest-path ../crates/cpd-python/Cargo.toml --features extension-module --interpreter python
-          python -m pip install --force-reinstall ../target/wheels/cpd_rs-*.whl
+          maturin build --release --interpreter python
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          wheels = sorted(Path("../target/wheels").glob("cpd_rs-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(
+                  f"expected exactly one cpd-rs wheel, found {len(wheels)}: {[str(w) for w in wheels]}"
+              )
+          subprocess.check_call(
+              [sys.executable, "-m", "pip", "install", "--force-reinstall", str(wheels[0])]
+          )
+          PY
 
       - name: Run MVP-A Python API tests
         run: |
