@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "Core types and invariants for changepoint detection in cpd-rs."
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/cpd-core"
+keywords = ["changepoint", "time-series", "statistics"]
+categories = ["algorithms", "science"]
 
 [lib]
 path = "src/lib.rs"

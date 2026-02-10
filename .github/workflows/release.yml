@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish_to_crates_io:
+        description: "Publish Rust crates to crates.io"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -124,7 +129,7 @@ jobs:
           )
 
           for crate in "${crates[@]}"; do
-            cargo package --manifest-path "cpd/crates/${crate}/Cargo.toml" --allow-dirty
+            cargo package --locked --allow-dirty --no-verify --manifest-path "cpd/crates/${crate}/Cargo.toml"
           done
 
       - name: Upload crate package artifacts
@@ -379,3 +384,64 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: release-artifacts/dist
+
+  verify-crates-publish-dry-run:
+    name: verify-crates-publish-dry-run
+    if: ${{ github.event_name == 'push' || github.event.inputs.publish_to_crates_io == 'true' }}
+    needs: verify-release-bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cpd
+
+      - name: Verify crates.io dry-run publish
+        run: python3 .github/scripts/crates_publish.py dry-run
+
+  publish-crates-io:
+    name: publish-crates-io
+    if: ${{ github.event_name == 'push' || github.event.inputs.publish_to_crates_io == 'true' }}
+    needs: [verify-release-bundle, verify-crates-publish-dry-run]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cpd
+
+      - name: Download signed release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts-signed
+          path: release-artifacts
+
+      - name: Verify crate artifact alignment
+        run: python3 .github/scripts/crates_publish.py verify-alignment --release-artifacts-dir release-artifacts
+
+      - name: Publish crates to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: python3 .github/scripts/crates_publish.py publish

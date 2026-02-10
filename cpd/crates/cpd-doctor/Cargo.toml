@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "High-level changepoint detection facade across cpd-rs crates."
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/cpd-doctor"
+keywords = ["changepoint", "time-series", "statistics"]
+categories = ["algorithms", "science"]
 
 [lib]
 path = "src/lib.rs"
@@ -27,7 +33,7 @@ preprocess = [
 repro-strict = ["cpd-offline/repro-strict", "cpd-online/repro-strict"]
 
 [dependencies]
-cpd-core = { path = "../cpd-core" }
-cpd-offline = { path = "../cpd-offline" }
-cpd-online = { path = "../cpd-online" }
-cpd-preprocess = { path = "../cpd-preprocess", optional = true }
+cpd-core = { version = "0.1.0", path = "../cpd-core" }
+cpd-offline = { version = "0.1.0", path = "../cpd-offline" }
+cpd-online = { version = "0.1.0", path = "../cpd-online" }
+cpd-preprocess = { version = "0.1.0", path = "../cpd-preprocess", optional = true }

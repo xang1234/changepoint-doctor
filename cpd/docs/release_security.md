@@ -9,6 +9,7 @@ This project publishes security metadata for each tagged release:
   - `sbom-crates.cdx.json`
   - `sbom-wheels.cdx.json`
 - GitHub build provenance attestations
+- Pre-publish crate artifact alignment checks for crates.io publication
 
 Release assets are attached to the corresponding GitHub release tag (`v*`).
 
@@ -65,3 +66,9 @@ gh attestation verify <artifact-path-or-uri> --repo OWNER/REPO
 ```
 
 Refer to the workflow definition in `.github/workflows/release.yml` for exact subject paths.
+
+## 5. crates.io publication controls
+
+The release workflow publishes only the core Rust crates (`cpd-core`, `cpd-costs`, `cpd-preprocess`, `cpd-offline`, `cpd-online`, `cpd-doctor`) and enforces SHA256 alignment against signed release `.crate` assets before upload.
+
+For full publish policy, gating, auth fallback, and rerun guidance, see `cpd/docs/crates_publish.md`.

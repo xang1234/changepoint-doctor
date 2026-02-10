@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "Cost-model implementations for changepoint detection in cpd-rs."
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/cpd-costs"
+keywords = ["changepoint", "time-series", "statistics"]
+categories = ["algorithms", "science"]
 
 [lib]
 path = "src/lib.rs"
@@ -22,7 +28,7 @@ preprocess = ["cpd-core/preprocess"]
 repro-strict = ["cpd-core/repro-strict"]
 
 [dependencies]
-cpd-core = { path = "../cpd-core" }
+cpd-core = { version = "0.1.0", path = "../cpd-core" }
 
 [dev-dependencies]
 proptest = "1"
