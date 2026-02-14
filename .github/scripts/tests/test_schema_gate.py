@@ -221,7 +221,7 @@ class SchemaGateTests(unittest.TestCase):
     def test_offline_config_migration_fixture_requires_stopping_object(self):
         fixture = self._valid_offline_config_migration_fixture()
         fixture["stopping"] = "Penalized"
-        with self.assertRaisesRegex(ValueError, "stopping must be an object"):
+        with self.assertRaisesRegex(ValueError, "must be an object"):
             schema_gate.validate_offline_config_migration_fixture(
                 fixture, "pelt migration fixture"
             )
@@ -229,6 +229,12 @@ class SchemaGateTests(unittest.TestCase):
     def test_diagnostics_migration_fixture_accepts_v2(self):
         fixture = self._valid_diagnostics_migration_fixture(2)
         schema_gate.validate_diagnostics_migration_fixture(fixture)
+
+    def test_constraints_migration_fixture_rejects_invalid_cache_policy_shape(self):
+        fixture = self._valid_constraints_migration_fixture()
+        fixture["cache_policy"] = "Budgeted"
+        with self.assertRaisesRegex(ValueError, "string variant must be 'Full'"):
+            schema_gate.validate_constraints_migration_fixture(fixture)
 
 
 if __name__ == "__main__":

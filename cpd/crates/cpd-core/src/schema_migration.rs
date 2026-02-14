@@ -2,7 +2,10 @@
 
 #![forbid(unsafe_code)]
 
-use crate::{Constraints, CpdError, Diagnostics, OfflineChangePointResult, SegmentStats};
+use crate::{
+    Constraints, CpdError, Diagnostics, OfflineChangePointResult, SegmentStats,
+    validate_constraints_config,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -66,6 +69,7 @@ impl ConstraintsConfigWire {
 
     pub fn into_runtime_parts(self) -> Result<(Constraints, UnknownFields), CpdError> {
         validate_schema_version(self.schema_version, "ConstraintsConfig")?;
+        validate_constraints_config(&self.config)?;
         Ok((self.config, self.unknown_fields))
     }
 
@@ -184,6 +188,7 @@ impl OfflineChangePointResultWire {
             segments: self.segments,
             diagnostics,
         };
+        result.validate(result.diagnostics.n)?;
         Ok((result, self.unknown_fields, diagnostics_unknown_fields))
     }
 
@@ -199,7 +204,8 @@ mod tests {
         ConstraintsConfigWire, CURRENT_SCHEMA_VERSION, DiagnosticsWire,
         MAX_FORWARD_COMPAT_SCHEMA_VERSION, MIGRATION_GUIDANCE_PATH, OfflineChangePointResultWire,
     };
-    use serde_json::Value;
+    use crate::Constraints;
+    use serde_json::{Value, json};
 
     const CONSTRAINTS_V1_FIXTURE: &str =
         include_str!("../../../tests/fixtures/migrations/config/constraints.v1.json");
@@ -280,18 +286,44 @@ mod tests {
 
     #[test]
     fn v2_reader_behavior_accepts_v1_and_fills_defaults() {
-        let mut constraints_wire: ConstraintsConfigWire =
-            serde_json::from_str(CONSTRAINTS_V1_FIXTURE).expect("v1 constraints should deserialize");
+        let mut constraints_wire: ConstraintsConfigWire = serde_json::from_value(json!({
+            "schema_version": 1,
+            "min_segment_len": 2,
+            "jump": 1,
+            "cache_policy": "Full",
+            "degradation_plan": [],
+            "allow_algorithm_fallback": false
+        }))
+        .expect("minimal v1 constraints should deserialize");
         constraints_wire.schema_version = MAX_FORWARD_COMPAT_SCHEMA_VERSION;
-        let constraints_value =
-            serde_json::to_value(&constraints_wire).expect("constraints wire should serialize");
+        let constraints_value = serde_json::to_value(&constraints_wire)
+            .expect("constraints wire should serialize");
         assert_eq!(
             constraints_value.get("schema_version"),
             Some(&Value::from(MAX_FORWARD_COMPAT_SCHEMA_VERSION))
         );
+        let constraints_runtime = constraints_wire
+            .to_runtime()
+            .expect("constraints to_runtime should validate and fill option defaults");
+        assert!(constraints_runtime.max_change_points.is_none());
+        assert!(constraints_runtime.max_depth.is_none());
+        assert!(constraints_runtime.candidate_splits.is_none());
+        assert!(constraints_runtime.time_budget_ms.is_none());
+        assert!(constraints_runtime.max_cost_evals.is_none());
+        assert!(constraints_runtime.memory_budget_bytes.is_none());
+        assert!(constraints_runtime.max_cache_bytes.is_none());
 
-        let mut diagnostics_wire: DiagnosticsWire =
-            serde_json::from_str(DIAGNOSTICS_V1_FIXTURE).expect("v1 diagnostics should deserialize");
+        let mut diagnostics_wire: DiagnosticsWire = serde_json::from_value(json!({
+            "n": 20,
+            "d": 1,
+            "schema_version": 1,
+            "algorithm": "pelt",
+            "cost_model": "l2_mean",
+            "repro_mode": "Balanced",
+            "notes": [],
+            "warnings": []
+        }))
+        .expect("minimal v1 diagnostics should deserialize");
         diagnostics_wire.set_schema_version(MAX_FORWARD_COMPAT_SCHEMA_VERSION);
         let diagnostics_value =
             serde_json::to_value(&diagnostics_wire).expect("diagnostics wire should serialize");
@@ -299,9 +331,35 @@ mod tests {
             diagnostics_value.get("schema_version"),
             Some(&Value::from(MAX_FORWARD_COMPAT_SCHEMA_VERSION))
         );
+        let diagnostics_runtime = diagnostics_wire
+            .to_runtime()
+            .expect("diagnostics to_runtime should fill option defaults");
+        assert!(diagnostics_runtime.engine_version.is_none());
+        assert!(diagnostics_runtime.runtime_ms.is_none());
+        assert!(diagnostics_runtime.seed.is_none());
+        assert!(diagnostics_runtime.thread_count.is_none());
+        assert!(diagnostics_runtime.blas_backend.is_none());
+        assert!(diagnostics_runtime.cpu_features.is_none());
+        assert!(diagnostics_runtime.pruning_stats.is_none());
+        assert!(diagnostics_runtime.missing_policy_applied.is_none());
+        assert!(diagnostics_runtime.missing_fraction.is_none());
+        assert!(diagnostics_runtime.effective_sample_count.is_none());
 
-        let mut result_wire: OfflineChangePointResultWire =
-            serde_json::from_str(RESULT_V1_FIXTURE).expect("v1 result should deserialize");
+        let mut result_wire: OfflineChangePointResultWire = serde_json::from_value(json!({
+            "breakpoints": [20],
+            "change_points": [],
+            "diagnostics": {
+                "n": 20,
+                "d": 1,
+                "schema_version": 1,
+                "algorithm": "pelt",
+                "cost_model": "l2_mean",
+                "repro_mode": "Balanced",
+                "notes": [],
+                "warnings": []
+            }
+        }))
+        .expect("minimal v1 result should deserialize");
         result_wire.set_schema_version(MAX_FORWARD_COMPAT_SCHEMA_VERSION);
         let result_value = serde_json::to_value(&result_wire).expect("result wire should serialize");
         let diagnostics_obj = result_value
@@ -312,6 +370,11 @@ mod tests {
             diagnostics_obj.get("schema_version"),
             Some(&Value::from(MAX_FORWARD_COMPAT_SCHEMA_VERSION))
         );
+        let result_runtime = result_wire
+            .to_runtime()
+            .expect("result to_runtime should fill defaults and validate shape");
+        assert!(result_runtime.scores.is_none());
+        assert!(result_runtime.segments.is_none());
     }
 
     #[test]
@@ -368,5 +431,43 @@ mod tests {
             rebuilt_diag.get("future_diagnostics_flag"),
             source_diag.get("future_diagnostics_flag")
         );
+    }
+
+    #[test]
+    fn constraints_to_runtime_rejects_invalid_config_shape() {
+        let err = ConstraintsConfigWire {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            config: Constraints {
+                jump: 0,
+                ..Constraints::default()
+            },
+            unknown_fields: Default::default(),
+        }
+        .to_runtime()
+        .expect_err("jump=0 must fail strict to_runtime validation");
+        assert!(err.to_string().contains("constraints.jump"));
+    }
+
+    #[test]
+    fn result_to_runtime_rejects_invalid_semantics() {
+        let wire: OfflineChangePointResultWire = serde_json::from_value(json!({
+            "breakpoints": [20],
+            "change_points": [10],
+            "diagnostics": {
+                "n": 20,
+                "d": 1,
+                "schema_version": 1,
+                "algorithm": "pelt",
+                "cost_model": "l2_mean",
+                "repro_mode": "Balanced",
+                "notes": [],
+                "warnings": []
+            }
+        }))
+        .expect("wire should deserialize");
+        let err = wire
+            .to_runtime()
+            .expect_err("invalid change_points must fail strict to_runtime validation");
+        assert!(err.to_string().contains("change_points must equal breakpoints excluding n"));
     }
 }

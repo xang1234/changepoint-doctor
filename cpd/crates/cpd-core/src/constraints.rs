@@ -141,42 +141,8 @@ fn validate_cache_policy(cache_policy: &CachePolicy) -> Result<(), CpdError> {
     }
 }
 
-/// Canonicalizes candidate split positions by applying jump and segment-length rules.
-///
-/// For valid inputs, output is deterministic, sorted ascending, and unique.
-pub fn canonicalize_candidates(constraints: &Constraints, n: usize) -> Vec<usize> {
-    if n == 0 {
-        return vec![];
-    }
-
-    let jump = constraints.jump.max(1);
-    let min_segment_len = constraints.min_segment_len;
-
-    if let Some(candidate_splits) = constraints.candidate_splits.as_deref() {
-        candidate_splits
-            .iter()
-            .copied()
-            .filter(|&split| split % jump == 0)
-            .filter(|&split| split_respects_min_segment_len(split, n, min_segment_len))
-            .collect::<Vec<_>>()
-    } else {
-        (jump..n)
-            .step_by(jump)
-            .filter(|&split| split_respects_min_segment_len(split, n, min_segment_len))
-            .collect::<Vec<_>>()
-    }
-}
-
-/// Validates and canonicalizes constraints for a specific series length `n`.
-pub fn validate_constraints(
-    constraints: &Constraints,
-    n: usize,
-) -> Result<ValidatedConstraints, CpdError> {
-    if n == 0 {
-        return Err(CpdError::invalid_input(
-            "constraints validation requires n >= 1; got n=0",
-        ));
-    }
+/// Validates shape-level constraints that do not depend on series length `n`.
+pub fn validate_constraints_config(constraints: &Constraints) -> Result<(), CpdError> {
     if constraints.min_segment_len == 0 {
         return Err(CpdError::invalid_input(
             "constraints.min_segment_len must be >= 1; got 0",
@@ -227,6 +193,56 @@ pub fn validate_constraints(
             "constraints.max_cache_bytes must be <= constraints.memory_budget_bytes; got max_cache_bytes={max_cache_bytes}, memory_budget_bytes={memory_budget_bytes}"
         )));
     }
+
+    if let Some(candidate_splits) = constraints.candidate_splits.as_deref()
+        && let Some(max_split) = candidate_splits.iter().copied().max()
+    {
+        let n_shape = max_split
+            .checked_add(1)
+            .ok_or_else(|| CpdError::invalid_input("constraints.candidate_splits overflow"))?;
+        validate_candidate_splits_sorted_unique_in_range(candidate_splits, n_shape)?;
+    }
+
+    Ok(())
+}
+
+/// Canonicalizes candidate split positions by applying jump and segment-length rules.
+///
+/// For valid inputs, output is deterministic, sorted ascending, and unique.
+pub fn canonicalize_candidates(constraints: &Constraints, n: usize) -> Vec<usize> {
+    if n == 0 {
+        return vec![];
+    }
+
+    let jump = constraints.jump.max(1);
+    let min_segment_len = constraints.min_segment_len;
+
+    if let Some(candidate_splits) = constraints.candidate_splits.as_deref() {
+        candidate_splits
+            .iter()
+            .copied()
+            .filter(|&split| split % jump == 0)
+            .filter(|&split| split_respects_min_segment_len(split, n, min_segment_len))
+            .collect::<Vec<_>>()
+    } else {
+        (jump..n)
+            .step_by(jump)
+            .filter(|&split| split_respects_min_segment_len(split, n, min_segment_len))
+            .collect::<Vec<_>>()
+    }
+}
+
+/// Validates and canonicalizes constraints for a specific series length `n`.
+pub fn validate_constraints(
+    constraints: &Constraints,
+    n: usize,
+) -> Result<ValidatedConstraints, CpdError> {
+    if n == 0 {
+        return Err(CpdError::invalid_input(
+            "constraints validation requires n >= 1; got n=0",
+        ));
+    }
+    validate_constraints_config(constraints)?;
 
     if let Some(candidate_splits) = constraints.candidate_splits.as_deref() {
         validate_candidate_splits_sorted_unique_in_range(candidate_splits, n)?;

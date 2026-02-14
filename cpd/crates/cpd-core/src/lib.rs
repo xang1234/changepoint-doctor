@@ -20,7 +20,7 @@ pub mod time_series;
 
 pub use constraints::{
     CachePolicy, Constraints, DegradationStep, ValidatedConstraints, canonicalize_candidates,
-    validate_constraints,
+    validate_constraints, validate_constraints_config,
 };
 pub use control::{BudgetMode, BudgetStatus, CancelToken};
 pub use detectors::{OfflineDetector, OnlineDetector, OnlineStepResult};

@@ -130,6 +130,97 @@ def _validate_schema_version(
     )
 
 
+def _validate_penalty_payload(payload: Any, context: str) -> None:
+    if isinstance(payload, str):
+        _require(
+            payload in {"BIC", "AIC"},
+            f"{context} must be 'BIC', 'AIC', or {{'Manual': <float>}}",
+        )
+        return
+
+    penalty = _as_dict(payload, context)
+    _require(
+        set(penalty) == {"Manual"},
+        f"{context} object variant must contain only 'Manual'",
+    )
+    manual = penalty.get("Manual")
+    _require(
+        _is_finite_number(manual) and float(manual) > 0.0,
+        f"{context}.Manual must be finite and > 0",
+    )
+
+
+def _validate_stopping_payload(payload: Any, context: str) -> None:
+    stopping = _as_dict(payload, context)
+    _require(len(stopping) == 1, f"{context} must contain exactly one variant")
+    variant, value = next(iter(stopping.items()))
+
+    if variant == "KnownK":
+        _require(
+            isinstance(value, int) and value >= 1,
+            f"{context}.KnownK must be int >= 1",
+        )
+        return
+
+    if variant == "Penalized":
+        _validate_penalty_payload(value, f"{context}.Penalized")
+        return
+
+    if variant == "PenaltyPath":
+        penalties = _as_list(value, f"{context}.PenaltyPath")
+        _require(
+            len(penalties) > 0,
+            f"{context}.PenaltyPath must be non-empty",
+        )
+        for idx, penalty in enumerate(penalties):
+            _validate_penalty_payload(penalty, f"{context}.PenaltyPath[{idx}]")
+        return
+
+    raise ValueError(f"{context} has unsupported variant '{variant}'")
+
+
+def _validate_cache_policy_payload(payload: Any, context: str) -> None:
+    if isinstance(payload, str):
+        _require(payload == "Full", f"{context} string variant must be 'Full'")
+        return
+
+    cache_policy = _as_dict(payload, context)
+    _require(len(cache_policy) == 1, f"{context} must contain exactly one variant")
+    variant, value = next(iter(cache_policy.items()))
+    variant_payload = _as_dict(value, f"{context}.{variant}")
+
+    if variant == "Budgeted":
+        _require(
+            set(variant_payload) == {"max_bytes"},
+            f"{context}.Budgeted must contain only max_bytes",
+        )
+        _require(
+            isinstance(variant_payload.get("max_bytes"), int)
+            and variant_payload.get("max_bytes") >= 1,
+            f"{context}.Budgeted.max_bytes must be int >= 1",
+        )
+        return
+
+    if variant == "Approximate":
+        _require(
+            set(variant_payload) == {"max_bytes", "error_tolerance"},
+            f"{context}.Approximate must contain max_bytes and error_tolerance",
+        )
+        _require(
+            isinstance(variant_payload.get("max_bytes"), int)
+            and variant_payload.get("max_bytes") >= 1,
+            f"{context}.Approximate.max_bytes must be int >= 1",
+        )
+        tolerance = variant_payload.get("error_tolerance")
+        _require(
+            _is_finite_number(tolerance) and float(tolerance) > 0.0,
+            f"{context}.Approximate.error_tolerance must be finite and > 0",
+        )
+        return
+
+    raise ValueError(f"{context} has unsupported variant '{variant}'")
+
+
 def _validate_preprocess_fixture(preprocess: dict[str, Any], context: str) -> None:
     unknown_stage_keys = sorted(set(preprocess) - PREPROCESS_STAGE_KEYS)
     _require(
@@ -733,15 +824,56 @@ def validate_constraints_migration_fixture(payload: dict[str, Any]) -> None:
             all(isinstance(split, int) and split > 0 for split in splits),
             "constraints migration fixture.candidate_splits must contain int > 0",
         )
+        _require(
+            all(splits[idx] > splits[idx - 1] for idx in range(1, len(splits))),
+            "constraints migration fixture.candidate_splits must be strictly increasing and unique",
+        )
 
     cache_policy = payload.get("cache_policy")
-    _require(
-        isinstance(cache_policy, str) or isinstance(cache_policy, dict),
-        "constraints migration fixture.cache_policy must be a string or object",
+    _validate_cache_policy_payload(
+        cache_policy, "constraints migration fixture.cache_policy"
     )
 
     degradation_plan = payload.get("degradation_plan")
-    _as_list(degradation_plan, "constraints migration fixture.degradation_plan")
+    degradation_steps = _as_list(
+        degradation_plan, "constraints migration fixture.degradation_plan"
+    )
+    for idx, step in enumerate(degradation_steps):
+        context = f"constraints migration fixture.degradation_plan[{idx}]"
+        if isinstance(step, str):
+            _require(
+                step == "DisableUncertaintyBands",
+                f"{context} string variant must be 'DisableUncertaintyBands'",
+            )
+            continue
+
+        step_obj = _as_dict(step, context)
+        _require(len(step_obj) == 1, f"{context} must contain exactly one variant")
+        variant, variant_payload = next(iter(step_obj.items()))
+        if variant == "IncreaseJump":
+            payload_obj = _as_dict(variant_payload, f"{context}.IncreaseJump")
+            _require(
+                set(payload_obj) == {"factor", "max_jump"},
+                f"{context}.IncreaseJump must contain factor and max_jump",
+            )
+            _require(
+                isinstance(payload_obj.get("factor"), int) and payload_obj.get("factor") >= 1,
+                f"{context}.IncreaseJump.factor must be int >= 1",
+            )
+            _require(
+                isinstance(payload_obj.get("max_jump"), int)
+                and payload_obj.get("max_jump") >= 1,
+                f"{context}.IncreaseJump.max_jump must be int >= 1",
+            )
+            continue
+
+        if variant == "SwitchCachePolicy":
+            _validate_cache_policy_payload(
+                variant_payload, f"{context}.SwitchCachePolicy"
+            )
+            continue
+
+        raise ValueError(f"{context} has unsupported variant '{variant}'")
 
     _require(
         isinstance(payload.get("allow_algorithm_fallback"), bool),
@@ -758,10 +890,7 @@ def validate_offline_config_migration_fixture(
         MIGRATION_SUPPORTED_SCHEMA_VERSIONS,
         f"{context}.schema_version",
     )
-    _require(
-        isinstance(payload.get("stopping"), dict),
-        f"{context}.stopping must be an object",
-    )
+    _validate_stopping_payload(payload.get("stopping"), f"{context}.stopping")
     _require(
         isinstance(payload.get("params_per_segment"), int)
         and payload.get("params_per_segment") >= 1,
