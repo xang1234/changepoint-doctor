@@ -4,11 +4,13 @@
 
 pub mod l2;
 pub mod model;
+pub mod nig;
 pub mod normal;
 
 pub use cpd_core::MissingSupport;
 pub use l2::{CostL2Mean, L2Cache};
 pub use model::{CachedCost, CostModel};
+pub use nig::{CostNIGMarginal, NIGCache, NIGPrior};
 pub use normal::{CostNormalMeanVar, NormalCache};
 
 /// Built-in cost model namespace placeholder.

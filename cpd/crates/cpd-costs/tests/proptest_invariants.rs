@@ -5,7 +5,7 @@
 use cpd_core::{
     CachePolicy, CpdError, MemoryLayout, MissingPolicy, ReproMode, TimeIndex, TimeSeriesView,
 };
-use cpd_costs::{CostL2Mean, CostModel, CostNormalMeanVar};
+use cpd_costs::{CostL2Mean, CostModel, CostNIGMarginal, CostNormalMeanVar, NIGPrior};
 use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
 
@@ -13,6 +13,19 @@ const ABS_TOL: f64 = 1e-7;
 const REL_TOL: f64 = 1e-6;
 const VAR_FLOOR: f64 = f64::EPSILON * 1e6;
 const MIN_PROPTEST_CASES: u32 = 1000;
+const LOG_2PI: f64 = 1.8378770664093453;
+const LANCZOS_G: f64 = 7.0;
+const LANCZOS_COEFFICIENTS: [f64; 9] = [
+    0.999_999_999_999_809_9,
+    676.520_368_121_885_1,
+    -1_259.139_216_722_402_8,
+    771.323_428_777_653_1,
+    -176.615_029_162_140_6,
+    12.507_343_278_686_905,
+    -0.138_571_095_265_720_12,
+    9.984_369_578_019_572e-6,
+    1.505_632_735_149_311_7e-7,
+];
 
 fn proptest_cases() -> u32 {
     std::env::var("PROPTEST_CASES")
@@ -74,6 +87,21 @@ fn normalize_variance(raw_var: f64) -> f64 {
     }
 }
 
+fn ln_gamma(z: f64) -> f64 {
+    if z < 0.5 {
+        let sin_term = (std::f64::consts::PI * z).sin().abs();
+        return std::f64::consts::PI.ln() - sin_term.ln() - ln_gamma(1.0 - z);
+    }
+
+    let shifted = z - 1.0;
+    let mut x = LANCZOS_COEFFICIENTS[0];
+    for (idx, coefficient) in LANCZOS_COEFFICIENTS.iter().copied().enumerate().skip(1) {
+        x += coefficient / (shifted + idx as f64);
+    }
+    let t = shifted + LANCZOS_G + 0.5;
+    0.5 * LOG_2PI + (shifted + 0.5) * t.ln() - t + x.ln()
+}
+
 fn naive_normal(values: &[f64], start: usize, end: usize) -> f64 {
     let segment = &values[start..end];
     let len = segment.len() as f64;
@@ -83,6 +111,30 @@ fn naive_normal(values: &[f64], start: usize, end: usize) -> f64 {
     let raw_var = sum_sq / len - mean * mean;
     let var = normalize_variance(raw_var);
     len * var.ln()
+}
+
+fn naive_nig(values: &[f64], start: usize, end: usize, prior: NIGPrior) -> f64 {
+    let segment = &values[start..end];
+    let n = segment.len() as f64;
+    let mean = segment.iter().sum::<f64>() / n;
+    let sse = segment
+        .iter()
+        .map(|value| {
+            let centered = *value - mean;
+            centered * centered
+        })
+        .sum::<f64>();
+    let kappa_n = prior.kappa0 + n;
+    let alpha_n = prior.alpha0 + 0.5 * n;
+    let beta_n = prior.beta0
+        + 0.5 * sse
+        + (prior.kappa0 * n * (mean - prior.mu0) * (mean - prior.mu0)) / (2.0 * kappa_n);
+    let log_marginal = (ln_gamma(alpha_n) - ln_gamma(prior.alpha0))
+        + prior.alpha0 * prior.beta0.ln()
+        - alpha_n * beta_n.ln()
+        + 0.5 * (prior.kappa0.ln() - kappa_n.ln())
+        - 0.5 * n * LOG_2PI;
+    -log_marginal
 }
 
 fn l2_segment_cost(values: &[f64], n: usize, d: usize, start: usize, end: usize) -> f64 {
@@ -97,6 +149,15 @@ fn l2_segment_cost(values: &[f64], n: usize, d: usize, start: usize, end: usize)
 fn normal_segment_cost(values: &[f64], n: usize, d: usize, start: usize, end: usize) -> f64 {
     let view = make_f64_view(values, n, d, MissingPolicy::Error).expect("view should be valid");
     let model = CostNormalMeanVar::new(ReproMode::Balanced);
+    let cache = model
+        .precompute(&view, &CachePolicy::Full)
+        .expect("precompute should succeed for valid data");
+    model.segment_cost(&cache, start, end)
+}
+
+fn nig_segment_cost(values: &[f64], n: usize, d: usize, start: usize, end: usize) -> f64 {
+    let view = make_f64_view(values, n, d, MissingPolicy::Error).expect("view should be valid");
+    let model = CostNIGMarginal::new(ReproMode::Balanced);
     let cache = model
         .precompute(&view, &CachePolicy::Full)
         .expect("precompute should succeed for valid data");
@@ -279,6 +340,24 @@ proptest! {
     }
 
     #[test]
+    fn nig_segment_cost_is_deterministic_and_matches_naive(
+        (values, start, end) in univariate_segment_case_strategy(1),
+    ) {
+        let view = make_univariate_view(&values);
+        let model = CostNIGMarginal::new(ReproMode::Balanced);
+        let cache = model
+            .precompute(&view, &CachePolicy::Full)
+            .expect("precompute should succeed for valid generated data");
+
+        let actual_first = model.segment_cost(&cache, start, end);
+        let actual_second = model.segment_cost(&cache, start, end);
+        let expected = naive_nig(&values, start, end, model.prior);
+
+        prop_assert!(relative_close(actual_first, expected));
+        prop_assert!(relative_close(actual_first, actual_second));
+    }
+
+    #[test]
     fn l2_segment_cost_is_shift_invariant(
         (values, start, end) in univariate_segment_case_strategy(1),
         shift in -500.0f64..500.0,
@@ -356,6 +435,19 @@ proptest! {
         let expected = base_cost + 2.0 * segment_len * scale.abs().ln();
 
         prop_assert!(relative_close(transformed_cost, expected));
+    }
+
+    #[test]
+    fn nig_segment_cost_is_shift_sensitive_under_nonzero_prior_mean(
+        (values, start, end) in univariate_segment_case_strategy(1),
+        shift in -50.0f64..50.0,
+    ) {
+        let n = values.len();
+        let shifted: Vec<f64> = values.iter().map(|value| value + shift).collect();
+        let base = nig_segment_cost(&values, n, 1, start, end);
+        let shifted_cost = nig_segment_cost(&shifted, n, 1, start, end);
+        prop_assert!(base.is_finite());
+        prop_assert!(shifted_cost.is_finite());
     }
 
     #[test]
