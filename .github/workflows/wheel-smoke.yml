@@ -127,6 +127,9 @@ jobs:
     needs: prepare_matrices
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
@@ -197,6 +200,9 @@ jobs:
     needs: prepare_matrices
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
