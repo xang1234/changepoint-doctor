@@ -18,6 +18,16 @@ use std::time::Instant;
 const DEFAULT_CANCEL_CHECK_EVERY: usize = 1000;
 const DEFAULT_SEED: u64 = 0;
 
+#[cfg(feature = "rayon")]
+trait WbsModelBound: CostModel + Sync {}
+#[cfg(feature = "rayon")]
+impl<T: CostModel + Sync> WbsModelBound for T {}
+
+#[cfg(not(feature = "rayon"))]
+trait WbsModelBound: CostModel {}
+#[cfg(not(feature = "rayon"))]
+impl<T: CostModel> WbsModelBound for T {}
+
 /// Interval strategy for [`Wbs`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -497,14 +507,14 @@ fn generate_deterministic_grid_intervals(
         return Ok(vec![]);
     }
 
-    let mut intervals = vec![];
     let lengths = dyadic_lengths(n, min_segment_len);
+    if lengths.is_empty() {
+        return Ok(vec![]);
+    }
 
-    for len in lengths {
-        let mut step = len / 2;
-        if step == 0 {
-            step = 1;
-        }
+    let mut total = 0usize;
+    for &len in &lengths {
+        let step = (len / 2).max(1);
 
         for start in (0..=n - len).step_by(step) {
             let interval = Interval {
@@ -512,24 +522,112 @@ fn generate_deterministic_grid_intervals(
                 end: start + len,
             };
             if interval_feasible(interval, candidates, min_segment_len)? {
-                intervals.push(interval);
+                total = total
+                    .checked_add(1)
+                    .ok_or_else(|| CpdError::resource_limit("deterministic interval overflow"))?;
             }
         }
 
-        if n > len {
+        if n > len && !(n - len).is_multiple_of(step) {
             let edge_start = n - len;
             let edge_interval = Interval {
                 start: edge_start,
                 end: n,
             };
             if interval_feasible(edge_interval, candidates, min_segment_len)? {
-                intervals.push(edge_interval);
+                total = total
+                    .checked_add(1)
+                    .ok_or_else(|| CpdError::resource_limit("deterministic interval overflow"))?;
             }
         }
     }
 
-    let deduped = dedup_sorted_intervals(intervals);
-    Ok(downsample_evenly(&deduped, target))
+    if total == 0 {
+        return Ok(vec![]);
+    }
+
+    if total <= target {
+        let mut intervals = Vec::with_capacity(total);
+        for &len in &lengths {
+            let step = (len / 2).max(1);
+            for start in (0..=n - len).step_by(step) {
+                let interval = Interval {
+                    start,
+                    end: start + len,
+                };
+                if interval_feasible(interval, candidates, min_segment_len)? {
+                    intervals.push(interval);
+                }
+            }
+            if n > len && !(n - len).is_multiple_of(step) {
+                let edge_start = n - len;
+                let edge_interval = Interval {
+                    start: edge_start,
+                    end: n,
+                };
+                if interval_feasible(edge_interval, candidates, min_segment_len)? {
+                    intervals.push(edge_interval);
+                }
+            }
+        }
+        return Ok(intervals);
+    }
+
+    let mut selected = Vec::with_capacity(target);
+    let mut seen = 0usize;
+    for &len in &lengths {
+        let step = (len / 2).max(1);
+        for start in (0..=n - len).step_by(step) {
+            let interval = Interval {
+                start,
+                end: start + len,
+            };
+            if !interval_feasible(interval, candidates, min_segment_len)? {
+                continue;
+            }
+
+            let prev_bucket = ((seen as u128) * (target as u128) / (total as u128))
+                .try_into()
+                .unwrap_or(usize::MAX);
+            seen = seen
+                .checked_add(1)
+                .ok_or_else(|| CpdError::resource_limit("deterministic interval overflow"))?;
+            let next_bucket = ((seen as u128) * (target as u128) / (total as u128))
+                .try_into()
+                .unwrap_or(usize::MAX);
+
+            if next_bucket > prev_bucket {
+                selected.push(interval);
+            }
+        }
+
+        if n > len && !(n - len).is_multiple_of(step) {
+            let edge_start = n - len;
+            let edge_interval = Interval {
+                start: edge_start,
+                end: n,
+            };
+            if !interval_feasible(edge_interval, candidates, min_segment_len)? {
+                continue;
+            }
+
+            let prev_bucket = ((seen as u128) * (target as u128) / (total as u128))
+                .try_into()
+                .unwrap_or(usize::MAX);
+            seen = seen
+                .checked_add(1)
+                .ok_or_else(|| CpdError::resource_limit("deterministic interval overflow"))?;
+            let next_bucket = ((seen as u128) * (target as u128) / (total as u128))
+                .try_into()
+                .unwrap_or(usize::MAX);
+
+            if next_bucket > prev_bucket {
+                selected.push(edge_interval);
+            }
+        }
+    }
+
+    Ok(selected)
 }
 
 fn generate_stratified_intervals(
@@ -647,6 +745,7 @@ fn best_split_for_interval_sequential<C: CostModel>(
 
     let full_cost =
         evaluate_segment_cost(model, cache, interval.start, interval.end, ctx, runtime)?;
+    checked_counter_increment(&mut runtime.intervals_considered, "intervals_considered")?;
 
     let mut best_gain = f64::NEG_INFINITY;
     let mut best_split = usize::MAX;
@@ -656,8 +755,6 @@ fn best_split_for_interval_sequential<C: CostModel>(
         check_runtime_controls(*iteration, cancel_check_every, ctx, started_at, runtime)?;
 
         checked_counter_increment(&mut runtime.candidates_considered, "candidates_considered")?;
-        checked_counter_increment(&mut runtime.intervals_considered, "intervals_considered")?;
-
         let left_cost = evaluate_segment_cost(model, cache, interval.start, split, ctx, runtime)?;
         let right_cost = evaluate_segment_cost(model, cache, split, interval.end, ctx, runtime)?;
 
@@ -776,7 +873,7 @@ fn can_use_parallel(_ctx: &ExecutionContext<'_>) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn best_split_for_segment<C: CostModel + Sync>(
+fn best_split_for_segment<C: WbsModelBound>(
     model: &C,
     cache: &C::Cache,
     intervals: &[Interval],
@@ -826,11 +923,7 @@ fn best_split_for_segment<C: CostModel + Sync>(
                 score.candidates_considered,
                 "candidates_considered",
             )?;
-            checked_counter_add(
-                &mut runtime.intervals_considered,
-                score.candidates_considered,
-                "intervals_considered",
-            )?;
+            checked_counter_add(&mut runtime.intervals_considered, 1, "intervals_considered")?;
 
             best = match best {
                 Some(current) => {
@@ -899,7 +992,7 @@ fn best_split_for_segment<C: CostModel + Sync>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn add_segment_to_frontier<C: CostModel + Sync>(
+fn add_segment_to_frontier<C: WbsModelBound>(
     frontier: &mut Vec<SegmentCandidate>,
     model: &C,
     cache: &C::Cache,
@@ -967,7 +1060,7 @@ fn build_result_breakpoints(n: usize, change_points: Vec<usize>) -> Vec<usize> {
     breakpoints
 }
 
-impl<C: CostModel + Sync> OfflineDetector for Wbs<C> {
+impl<C: WbsModelBound> OfflineDetector for Wbs<C> {
     fn detect(
         &self,
         x: &TimeSeriesView<'_>,
