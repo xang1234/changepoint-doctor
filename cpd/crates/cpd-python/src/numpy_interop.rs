@@ -527,6 +527,16 @@ mod tests {
     use pyo3::exceptions::{PyTypeError, PyValueError};
     use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyModule};
     use pyo3::{PyErr, Python};
+    use std::sync::Once;
+
+    fn with_python<F, R>(f: F) -> R
+    where
+        F: for<'py> FnOnce(Python<'py>) -> R,
+    {
+        static INIT: Once = Once::new();
+        INIT.call_once(pyo3::prepare_freethreaded_python);
+        Python::with_gil(f)
+    }
 
     fn eval_numpy<'py>(py: Python<'py>, expr: &str) -> pyo3::Bound<'py, pyo3::PyAny> {
         let np = PyModule::import_bound(py, "numpy").expect("numpy should import");
@@ -560,7 +570,7 @@ mod tests {
 
     #[test]
     fn c_contiguous_f64_1d_zero_copy() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(py, "np.array([1.0, 2.0, 3.0], dtype=np.float64)");
             let parsed =
                 parse_numpy_series(py, &x, None, MissingPolicy::Error, DTypePolicy::KeepInput)
@@ -582,7 +592,7 @@ mod tests {
 
     #[test]
     fn c_contiguous_f64_2d_zero_copy() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(
                 py,
                 "np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64, order='C')",
@@ -610,7 +620,7 @@ mod tests {
 
     #[test]
     fn c_contiguous_f32_keep_input_is_zero_copy() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(py, "np.array([1.0, 2.0, 3.0], dtype=np.float32)");
             let parsed =
                 parse_numpy_series(py, &x, None, MissingPolicy::Error, DTypePolicy::KeepInput)
@@ -632,7 +642,7 @@ mod tests {
 
     #[test]
     fn c_contiguous_f32_force_f64_upcasts_with_note() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(py, "np.array([1.0, 2.0, 3.0], dtype=np.float32)");
             let parsed =
                 parse_numpy_series(py, &x, None, MissingPolicy::Error, DTypePolicy::ForceF64)
@@ -654,7 +664,7 @@ mod tests {
 
     #[test]
     fn f_contiguous_f64_copies_with_note() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(
                 py,
                 "np.asfortranarray(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64))",
@@ -684,7 +694,7 @@ mod tests {
 
     #[test]
     fn strided_f64_copies_with_note() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(py, "np.arange(10, dtype=np.float64)[::2]");
             let parsed =
                 parse_numpy_series(py, &x, None, MissingPolicy::Error, DTypePolicy::KeepInput)
@@ -707,7 +717,7 @@ mod tests {
 
     #[test]
     fn invalid_dtype_is_rejected() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(py, "np.array([1, 2, 3], dtype=np.int64)");
             let err =
                 parse_numpy_series(py, &x, None, MissingPolicy::Error, DTypePolicy::KeepInput)
@@ -719,7 +729,7 @@ mod tests {
 
     #[test]
     fn nans_with_missing_policy_error_are_rejected() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(py, "np.array([1.0, np.nan, 3.0], dtype=np.float64)");
             let err =
                 parse_numpy_series(py, &x, None, MissingPolicy::Error, DTypePolicy::KeepInput)
@@ -731,7 +741,7 @@ mod tests {
 
     #[test]
     fn shape_rejection_for_invalid_ndim() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let scalar = eval_numpy(py, "np.array(1.0, dtype=np.float64)");
             let scalar_err = parse_numpy_series(
                 py,
@@ -760,7 +770,7 @@ mod tests {
 
     #[test]
     fn time_index_int64_explicit() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(py, "np.array([0.1, 0.2, 0.3], dtype=np.float64)");
             let t = eval_numpy(py, "np.array([10, 20, 30], dtype=np.int64)");
             let parsed = parse_numpy_series(
@@ -784,7 +794,7 @@ mod tests {
 
     #[test]
     fn time_index_datetime64_ns_explicit() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(py, "np.array([0.1, 0.2, 0.3], dtype=np.float64)");
             let t = eval_numpy(
                 py,
@@ -811,7 +821,7 @@ mod tests {
 
     #[test]
     fn time_index_length_mismatch_rejected() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(py, "np.array([0.1, 0.2, 0.3], dtype=np.float64)");
             let t = eval_numpy(py, "np.array([10, 20], dtype=np.int64)");
             let err = parse_numpy_series(
@@ -830,7 +840,7 @@ mod tests {
 
     #[test]
     fn omitted_time_index_defaults_to_none() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(py, "np.array([0.1, 0.2, 0.3], dtype=np.float64)");
             let parsed =
                 parse_numpy_series(py, &x, None, MissingPolicy::Error, DTypePolicy::KeepInput)
@@ -848,7 +858,7 @@ mod tests {
 
     #[test]
     fn into_owned_detaches_data_and_preserves_diagnostics() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let x = eval_numpy(
                 py,
                 "np.asfortranarray(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64))",

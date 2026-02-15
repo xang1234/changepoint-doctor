@@ -1818,7 +1818,8 @@ mod tests {
             assert_eq!(result.breakpoints.last().copied(), Some(values.len()));
             assert_strictly_increasing(&result.breakpoints);
             for &cp in &result.change_points {
-                assert_eq!(cp % 1, 0);
+                assert!(cp >= constraints.min_segment_len);
+                assert!(cp + constraints.min_segment_len <= values.len());
             }
         }
     }

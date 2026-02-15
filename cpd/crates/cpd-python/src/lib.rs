@@ -1117,6 +1117,16 @@ mod tests {
     use pyo3::Python;
     use pyo3::exceptions::{PyRuntimeError, PyValueError};
     use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyModule};
+    use std::sync::Once;
+
+    fn with_python<F, R>(f: F) -> R
+    where
+        F: for<'py> FnOnce(Python<'py>) -> R,
+    {
+        static INIT: Once = Once::new();
+        INIT.call_once(pyo3::prepare_freethreaded_python);
+        Python::with_gil(f)
+    }
 
     #[test]
     fn smoke_detector_rust_path_is_deterministic() {
@@ -1127,7 +1137,7 @@ mod tests {
 
     #[test]
     fn smoke_detect_function_returns_terminal_breakpoint() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let values = PyList::new_bound(py, [0.0, 1.0, 2.0, 3.0]);
             let out = smoke_detect(values.as_any()).expect("smoke_detect should succeed");
             assert_eq!(out, vec![4]);
@@ -1136,7 +1146,7 @@ mod tests {
 
     #[test]
     fn module_registration_exposes_public_api() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
             _cpd_rs(&module).expect("module registration should succeed");
 
@@ -1176,7 +1186,7 @@ mod tests {
 
     #[test]
     fn pelt_fit_predict_penalized_roundtrip() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
             _cpd_rs(&module).expect("module registration should succeed");
 
@@ -1206,7 +1216,7 @@ mod tests {
 
     #[test]
     fn pelt_predict_known_k_maps_to_knownk_stopping() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
             _cpd_rs(&module).expect("module registration should succeed");
 
@@ -1236,7 +1246,7 @@ mod tests {
 
     #[test]
     fn binseg_fit_predict_penalized_roundtrip() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
             _cpd_rs(&module).expect("module registration should succeed");
 
@@ -1266,7 +1276,7 @@ mod tests {
 
     #[test]
     fn detect_offline_binseg_matches_class_api_for_known_k() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
             _cpd_rs(&module).expect("module registration should succeed");
 
@@ -1307,7 +1317,7 @@ mod tests {
     #[test]
     #[cfg(not(feature = "preprocess"))]
     fn detect_offline_rejects_preprocess_without_feature() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
             _cpd_rs(&module).expect("module registration should succeed");
 
@@ -1327,7 +1337,7 @@ mod tests {
     #[test]
     #[cfg(feature = "preprocess")]
     fn detect_offline_applies_preprocess_and_emits_notes() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
             _cpd_rs(&module).expect("module registration should succeed");
 
@@ -1377,7 +1387,7 @@ mod tests {
     #[test]
     #[cfg(feature = "preprocess")]
     fn detect_offline_rejects_invalid_preprocess_shape() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
             _cpd_rs(&module).expect("module registration should succeed");
 
@@ -1396,7 +1406,7 @@ mod tests {
 
     #[test]
     fn pelt_rejects_invalid_model_name() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let err = PyPelt::new("bad-model", 2, 1, None).expect_err("invalid model must fail");
             assert!(err.is_instance_of::<PyValueError>(py));
             assert!(err.to_string().contains("unsupported model"));
@@ -1405,7 +1415,7 @@ mod tests {
 
     #[test]
     fn binseg_rejects_invalid_model_name() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let err =
                 PyBinseg::new("bad-model", 2, 1, None, None).expect_err("invalid model must fail");
             assert!(err.is_instance_of::<PyValueError>(py));
@@ -1415,7 +1425,7 @@ mod tests {
 
     #[test]
     fn pelt_rejects_invalid_predict_argument_combinations() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
             _cpd_rs(&module).expect("module registration should succeed");
 
@@ -1458,7 +1468,7 @@ mod tests {
 
     #[test]
     fn pelt_predict_before_fit_is_clear_error() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let module = PyModule::new_bound(py, "_cpd_rs").expect("module should be created");
             _cpd_rs(&module).expect("module registration should succeed");
 

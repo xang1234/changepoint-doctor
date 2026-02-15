@@ -506,10 +506,20 @@ mod tests {
     #[cfg(feature = "serde")]
     use serde_json::Value;
     use std::borrow::Cow;
+    use std::sync::Once;
 
     #[cfg(feature = "serde")]
     const OFFLINE_RESULT_FIXTURE_JSON: &str =
         include_str!("../tests/fixtures/offline_result_v1.json");
+
+    fn with_python<F, R>(f: F) -> R
+    where
+        F: for<'py> FnOnce(Python<'py>) -> R,
+    {
+        static INIT: Once = Once::new();
+        INIT.call_once(pyo3::prepare_freethreaded_python);
+        Python::with_gil(f)
+    }
 
     fn sample_core_result() -> CoreOfflineChangePointResult {
         let diagnostics = CoreDiagnostics {
@@ -593,7 +603,7 @@ mod tests {
 
     #[test]
     fn python_properties_are_accessible_and_typed() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let py_result = Py::new(py, PyOfflineChangePointResult::from(sample_core_result()))
                 .expect("result object should be constructible");
             let result_any = py_result.bind(py);
@@ -681,7 +691,7 @@ mod tests {
 
     #[test]
     fn repr_is_human_readable() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let py_result = Py::new(py, PyOfflineChangePointResult::from(sample_core_result()))
                 .expect("result object should be constructible");
             let result_repr: String = py_result
@@ -735,7 +745,7 @@ mod tests {
     #[test]
     #[cfg(not(feature = "serde"))]
     fn to_json_requires_serde_feature() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let py_result = Py::new(py, PyOfflineChangePointResult::from(sample_core_result()))
                 .expect("result object should be constructible");
 
@@ -754,7 +764,7 @@ mod tests {
     #[test]
     #[cfg(feature = "serde")]
     fn to_json_roundtrip_preserves_core_payload() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let py_result = Py::new(py, PyOfflineChangePointResult::from(sample_core_result()))
                 .expect("result object should be constructible");
 
@@ -812,7 +822,7 @@ mod tests {
     #[test]
     #[cfg(feature = "serde")]
     fn to_json_matches_versioned_fixture_shape() {
-        Python::with_gil(|py| {
+        with_python(|py| {
             let py_result = Py::new(py, PyOfflineChangePointResult::from(sample_core_result()))
                 .expect("result object should be constructible");
 
