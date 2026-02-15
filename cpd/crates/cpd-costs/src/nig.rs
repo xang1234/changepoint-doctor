@@ -295,7 +295,7 @@ fn ln_gamma(z: f64) -> f64 {
 
 fn segment_log_marginal(cache: &NIGCache, start: usize, end: usize, dim: usize) -> f64 {
     let base = cache.dim_offset(dim);
-    let m = (cache.prefix_count[end] - cache.prefix_count[start]) as f64;
+    let m = (cache.prefix_count[base + end] - cache.prefix_count[base + start]) as f64;
     let sum = cache.prefix_sum[base + end] - cache.prefix_sum[base + start];
     let sum_sq = cache.prefix_sum_sq[base + end] - cache.prefix_sum_sq[base + start];
     let mean = sum / m;
@@ -384,15 +384,16 @@ impl CostModel for CostNIGMarginal {
             .checked_mul(x.d)
             .ok_or_else(|| cache_overflow_err(x.n, x.d))?;
 
-        let mut prefix_count = Vec::with_capacity(prefix_len_per_dim);
-        for idx in 0..=x.n {
-            prefix_count.push(idx);
-        }
+        let mut prefix_count = Vec::with_capacity(total_prefix_len);
 
         let mut prefix_sum = Vec::with_capacity(total_prefix_len);
         let mut prefix_sum_sq = Vec::with_capacity(total_prefix_len);
 
         for dim in 0..x.d {
+            for idx in 0..=x.n {
+                prefix_count.push(idx);
+            }
+
             let mut series = Vec::with_capacity(x.n);
             for t in 0..x.n {
                 series.push(read_value(x, t, dim)?);
@@ -437,7 +438,7 @@ impl CostModel for CostNIGMarginal {
             None => return usize::MAX,
         };
 
-        let count_bytes = match prefix_len_per_dim.checked_mul(std::mem::size_of::<usize>()) {
+        let count_bytes = match total_prefix_len.checked_mul(std::mem::size_of::<usize>()) {
             Some(v) => v,
             None => return usize::MAX,
         };
@@ -560,6 +561,22 @@ mod tests {
             + 0.5 * (prior.kappa0.ln() - kappa_n.ln())
             - 0.5 * n * super::LOG_2PI;
         -log_marginal
+    }
+
+    fn synthetic_multivariate_values(n: usize, d: usize) -> Vec<f64> {
+        let mut values = Vec::with_capacity(n * d);
+        for t in 0..n {
+            for dim in 0..d {
+                let x = t as f64 + 1.0;
+                let y = dim as f64 + 1.0;
+                values.push((x * y) + (0.03 * x).sin() + (0.07 * y).cos());
+            }
+        }
+        values
+    }
+
+    fn dim_series(values: &[f64], n: usize, d: usize, dim: usize) -> Vec<f64> {
+        (0..n).map(|t| values[t * d + dim]).collect()
     }
 
     #[test]
@@ -738,6 +755,47 @@ mod tests {
     }
 
     #[test]
+    fn multivariate_matches_univariate_sum_for_d1_d4_d16() {
+        let model = CostNIGMarginal::default();
+        let n = 9;
+        let start = 2;
+        let end = 8;
+
+        for d in [1_usize, 4, 16] {
+            let values = synthetic_multivariate_values(n, d);
+            let view = make_f64_view(
+                &values,
+                n,
+                d,
+                MemoryLayout::CContiguous,
+                MissingPolicy::Error,
+            );
+            let cache = model
+                .precompute(&view, &CachePolicy::Full)
+                .expect("precompute should succeed");
+            let multivariate = model.segment_cost(&cache, start, end);
+
+            let mut per_dimension_sum = 0.0;
+            for dim in 0..d {
+                let series = dim_series(&values, n, d, dim);
+                let dim_view = make_f64_view(
+                    &series,
+                    n,
+                    1,
+                    MemoryLayout::CContiguous,
+                    MissingPolicy::Error,
+                );
+                let dim_cache = model
+                    .precompute(&dim_view, &CachePolicy::Full)
+                    .expect("univariate precompute should succeed");
+                per_dimension_sum += model.segment_cost(&dim_cache, start, end);
+            }
+
+            assert_close(multivariate, per_dimension_sum, 1e-10);
+        }
+    }
+
+    #[test]
     fn constant_small_and_extreme_segments_remain_finite() {
         let model = CostNIGMarginal::default();
 
@@ -833,6 +891,38 @@ mod tests {
             )
             .expect_err("approximate policy should be unsupported");
         assert!(matches!(err, CpdError::NotSupported(_)));
+    }
+
+    #[test]
+    fn worst_case_cache_bytes_matches_multivariate_formula() {
+        let model = CostNIGMarginal::default();
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let view = make_f64_view(
+            &values,
+            3,
+            2,
+            MemoryLayout::CContiguous,
+            MissingPolicy::Error,
+        );
+
+        let prefix_len_per_dim = view.n + 1;
+        let total_prefix_len = prefix_len_per_dim * view.d;
+        let expected_small =
+            total_prefix_len * (std::mem::size_of::<usize>() + 2 * std::mem::size_of::<f64>());
+        assert_eq!(model.worst_case_cache_bytes(&view), expected_small);
+
+        let n_large = 1_000_000usize;
+        let d_large = 16usize;
+        let expected_large = n_large
+            .checked_add(1)
+            .and_then(|v| v.checked_mul(d_large))
+            .and_then(|v| {
+                v.checked_mul(std::mem::size_of::<usize>() + 2 * std::mem::size_of::<f64>())
+            })
+            .expect("formula should not overflow");
+        if std::mem::size_of::<usize>() == 8 {
+            assert_eq!(expected_large, 384_000_384);
+        }
     }
 
     #[test]

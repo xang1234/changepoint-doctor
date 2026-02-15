@@ -410,16 +410,20 @@ mod tests {
         m * var.ln()
     }
 
-    fn naive_normal_multivariate_c(values: &[f64], d: usize, start: usize, end: usize) -> f64 {
-        let mut total = 0.0;
-        for dim in 0..d {
-            let mut segment = Vec::with_capacity(end - start);
-            for t in start..end {
-                segment.push(values[t * d + dim]);
+    fn synthetic_multivariate_values(n: usize, d: usize) -> Vec<f64> {
+        let mut values = Vec::with_capacity(n * d);
+        for t in 0..n {
+            for dim in 0..d {
+                let x = t as f64 + 1.0;
+                let y = dim as f64 + 1.0;
+                values.push((x * y) + (0.04 * x).sin() + (0.11 * y).cos());
             }
-            total += naive_normal_univariate(&segment, 0, segment.len());
         }
-        total
+        values
+    }
+
+    fn dim_series(values: &[f64], n: usize, d: usize, dim: usize) -> Vec<f64> {
+        (0..n).map(|t| values[t * d + dim]).collect()
     }
 
     fn lcg_next(state: &mut u64) -> u64 {
@@ -659,42 +663,44 @@ mod tests {
     }
 
     #[test]
-    fn multivariate_matches_univariate_sum_and_d1_parity() {
+    fn multivariate_matches_univariate_sum_for_d1_d4_d16() {
         let model = CostNormalMeanVar::default();
+        let n = 9;
+        let start = 2;
+        let end = 8;
 
-        let d1_values = [1.0, 2.0, 4.0, 8.0, 16.0];
-        let d1_view = make_f64_view(
-            &d1_values,
-            5,
-            1,
-            MemoryLayout::CContiguous,
-            MissingPolicy::Error,
-        );
-        let d1_cache = model
-            .precompute(&d1_view, &CachePolicy::Full)
-            .expect("precompute should succeed");
-        let d1_cost = model.segment_cost(&d1_cache, 1, 5);
-        let d1_naive = naive_normal_univariate(&d1_values, 1, 5);
-        assert_close(d1_cost, d1_naive, 1e-12);
+        for d in [1_usize, 4, 16] {
+            let values = synthetic_multivariate_values(n, d);
+            let view = make_f64_view(
+                &values,
+                n,
+                d,
+                MemoryLayout::CContiguous,
+                MissingPolicy::Error,
+            );
+            let cache = model
+                .precompute(&view, &CachePolicy::Full)
+                .expect("precompute should succeed");
+            let multivariate = model.segment_cost(&cache, start, end);
 
-        let d = 3;
-        let values = vec![
-            1.0, 10.0, 100.0, 2.0, 20.0, 200.0, 4.0, 40.0, 400.0, 8.0, 80.0, 800.0, 16.0, 160.0,
-            1600.0,
-        ];
-        let view = make_f64_view(
-            &values,
-            5,
-            d,
-            MemoryLayout::CContiguous,
-            MissingPolicy::Error,
-        );
-        let cache = model
-            .precompute(&view, &CachePolicy::Full)
-            .expect("precompute should succeed");
-        let fast = model.segment_cost(&cache, 1, 5);
-        let naive = naive_normal_multivariate_c(&values, d, 1, 5);
-        assert_close(fast, naive, 1e-9);
+            let mut per_dimension_sum = 0.0;
+            for dim in 0..d {
+                let series = dim_series(&values, n, d, dim);
+                let dim_view = make_f64_view(
+                    &series,
+                    n,
+                    1,
+                    MemoryLayout::CContiguous,
+                    MissingPolicy::Error,
+                );
+                let dim_cache = model
+                    .precompute(&dim_view, &CachePolicy::Full)
+                    .expect("univariate precompute should succeed");
+                per_dimension_sum += model.segment_cost(&dim_cache, start, end);
+            }
+
+            assert_close(multivariate, per_dimension_sum, 1e-10);
+        }
     }
 
     #[test]
@@ -812,6 +818,35 @@ mod tests {
             )
             .expect_err("approximate policy should be unsupported");
         assert!(matches!(err, CpdError::NotSupported(_)));
+    }
+
+    #[test]
+    fn worst_case_cache_bytes_matches_multivariate_formula() {
+        let model = CostNormalMeanVar::default();
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let view = make_f64_view(
+            &values,
+            3,
+            2,
+            MemoryLayout::CContiguous,
+            MissingPolicy::Error,
+        );
+
+        let prefix_len_per_dim = view.n + 1;
+        let total_prefix_len = prefix_len_per_dim * view.d;
+        let expected_small = 2 * total_prefix_len * std::mem::size_of::<f64>();
+        assert_eq!(model.worst_case_cache_bytes(&view), expected_small);
+
+        let n_large = 1_000_000usize;
+        let d_large = 16usize;
+        let expected_large = n_large
+            .checked_add(1)
+            .and_then(|v| v.checked_mul(d_large))
+            .and_then(|v| v.checked_mul(2 * std::mem::size_of::<f64>()))
+            .expect("formula should not overflow");
+        if std::mem::size_of::<f64>() == 8 {
+            assert_eq!(expected_large, 256_000_256);
+        }
     }
 
     #[test]
