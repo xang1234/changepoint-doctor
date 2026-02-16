@@ -6,10 +6,12 @@ use crate::diagnostics::{
     DiagnosticsSummary, DoctorDiagnosticsConfig, MissingPattern, compute_diagnostics,
 };
 use cpd_core::{
-    Constraints, CpdError, DTypeView, MemoryLayout, TimeSeriesView, validate_constraints,
-    validate_constraints_config,
+    Constraints, CpdError, DTypeView, ExecutionContext, MemoryLayout, MissingPolicy,
+    OfflineChangePointResult, OfflineDetector, Penalty, Stopping, TimeIndex, TimeSeriesView,
+    penalty_value, validate_breakpoints, validate_constraints, validate_constraints_config,
 };
-use cpd_offline::{BinSegConfig, PeltConfig, WbsConfig, WbsIntervalStrategy};
+use cpd_costs::{CostL2Mean, CostModel, CostNIGMarginal, CostNormalMeanVar};
+use cpd_offline::{BinSeg, BinSegConfig, Pelt, PeltConfig, Wbs, WbsConfig, WbsIntervalStrategy};
 use cpd_online::{
     BernoulliBetaPrior, BocpdConfig, CusumConfig, GaussianNigPrior, ObservationModel,
     PageHinkleyConfig, PoissonGammaPrior,
@@ -25,6 +27,9 @@ const CONFIDENCE_CEILING: f64 = 0.99;
 const OOD_GATING_LAMBDA: f64 = 0.90;
 const OOD_GATING_MAX_PENALTY: f64 = 0.80;
 const DEFAULT_CALIBRATION_BINS: usize = 10;
+const DEFAULT_VALIDATION_TOLERANCE: usize = 1;
+const PENALTY_SCALE_DOWN: f64 = 0.90;
+const PENALTY_SCALE_UP: f64 = 1.10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Objective {
@@ -286,6 +291,23 @@ pub struct ValidationSummary {
     pub notes: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidationReport {
+    pub pipeline_results: Vec<(PipelineConfig, OfflineChangePointResult)>,
+    pub stability_score: f64,
+    pub agreement_score: f64,
+    pub calibration_score: Option<f64>,
+    pub penalty_sensitivity: Option<f64>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ValidationDownsampledInput {
+    values: Vec<f64>,
+    missing_mask: Option<Vec<u8>>,
+    sampled_row_indices: Vec<usize>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CandidateFamily {
     StrongMapped,
@@ -517,6 +539,672 @@ pub fn recommend(
         .collect::<Vec<_>>();
 
     Ok(recommendations)
+}
+
+pub fn validate_top_k(
+    x: &TimeSeriesView<'_>,
+    recommendations: &[Recommendation],
+    k: usize,
+    downsample: Option<usize>,
+    seed: Option<u64>,
+) -> Result<ValidationReport, CpdError> {
+    if recommendations.is_empty() {
+        return Err(CpdError::invalid_input(
+            "validate_top_k requires at least one recommendation",
+        ));
+    }
+    if k == 0 {
+        return Err(CpdError::invalid_input(
+            "validate_top_k requires k >= 1; got 0",
+        ));
+    }
+
+    let mut notes = Vec::new();
+    let selected_len = recommendations.len().min(k);
+    if selected_len < k {
+        notes.push(format!(
+            "requested k={k} but only {} recommendations were provided",
+            recommendations.len()
+        ));
+    }
+
+    let mut validation_view = *x;
+    let mut downsampled_input: Option<ValidationDownsampledInput> = None;
+    let mut sampled_row_indices: Option<&[usize]> = None;
+    let mut tolerance = DEFAULT_VALIDATION_TOLERANCE;
+
+    if let Some(stride) = downsample {
+        if stride == 0 {
+            return Err(CpdError::invalid_input(
+                "downsample must be >= 1 when provided; got 0",
+            ));
+        }
+
+        if stride > 1 && x.n > 2 {
+            downsampled_input = Some(build_validation_downsampled_input(x, stride)?);
+            tolerance = stride.max(DEFAULT_VALIDATION_TOLERANCE);
+            notes.push(format!(
+                "validation downsampled input with stride={stride} (n={} -> {})",
+                x.n,
+                downsampled_input
+                    .as_ref()
+                    .map(|holder| holder.sampled_row_indices.len())
+                    .unwrap_or(x.n)
+            ));
+        } else {
+            notes.push(format!(
+                "downsampling skipped because stride={stride} does not reduce n={}",
+                x.n
+            ));
+        }
+    }
+
+    if let Some(holder) = downsampled_input.as_ref() {
+        sampled_row_indices = Some(holder.sampled_row_indices.as_slice());
+        validation_view = TimeSeriesView::from_f64(
+            holder.values.as_slice(),
+            holder.sampled_row_indices.len(),
+            x.d,
+            MemoryLayout::CContiguous,
+            holder.missing_mask.as_deref(),
+            TimeIndex::None,
+            x.missing,
+        )?;
+    }
+
+    let mut pipeline_results = Vec::<(PipelineConfig, OfflineChangePointResult)>::new();
+    for (rank, recommendation) in recommendations.iter().take(selected_len).enumerate() {
+        if matches!(recommendation.pipeline, PipelineConfig::Online { .. }) {
+            notes.push(format!(
+                "skipped recommendation rank {} because online pipelines do not produce OfflineChangePointResult",
+                rank + 1
+            ));
+            continue;
+        }
+
+        let effective_pipeline = pipeline_with_seed_override(&recommendation.pipeline, seed);
+        match run_offline_pipeline(&validation_view, &effective_pipeline) {
+            Ok(result) => {
+                let remapped = remap_validation_result(result, sampled_row_indices, x.n)?;
+                pipeline_results.push((effective_pipeline, remapped));
+            }
+            Err(err) => {
+                notes.push(format!(
+                    "validation run failed for recommendation rank {} (pipeline={}): {err}",
+                    rank + 1,
+                    pipeline_id(&effective_pipeline)
+                ));
+            }
+        }
+    }
+
+    if pipeline_results.is_empty() {
+        return Err(CpdError::invalid_input(
+            "validate_top_k could not execute any offline pipelines from the selected recommendations",
+        ));
+    }
+
+    let offline_results = pipeline_results
+        .iter()
+        .map(|(_, result)| result.clone())
+        .collect::<Vec<_>>();
+    let stability_score = pairwise_stability_score(offline_results.as_slice(), tolerance);
+    let agreement_score = breakpoint_agreement_score(offline_results.as_slice(), tolerance);
+    let penalty_sensitivity = compute_penalty_sensitivity(
+        &validation_view,
+        pipeline_results.as_slice(),
+        tolerance,
+        seed,
+        sampled_row_indices,
+        x.n,
+        &mut notes,
+    )?;
+
+    notes.push(format!(
+        "stability/agreement tolerance set to ±{tolerance} samples"
+    ));
+    notes.push(
+        "calibration_score unavailable because validate_top_k does not take held-out labeled outcomes".to_string(),
+    );
+
+    Ok(ValidationReport {
+        pipeline_results,
+        stability_score,
+        agreement_score,
+        calibration_score: None,
+        penalty_sensitivity,
+        notes,
+    })
+}
+
+fn build_validation_downsampled_input(
+    x: &TimeSeriesView<'_>,
+    stride: usize,
+) -> Result<ValidationDownsampledInput, CpdError> {
+    if stride == 0 {
+        return Err(CpdError::invalid_input(
+            "validation downsampling stride must be >= 1; got 0",
+        ));
+    }
+
+    let mut sampled_row_indices = Vec::with_capacity(x.n.div_ceil(stride) + 1);
+    let mut t = 0usize;
+    let mut included_last = false;
+    while t < x.n {
+        if t + 1 == x.n {
+            included_last = true;
+        }
+        sampled_row_indices.push(t);
+        t = t.saturating_add(stride);
+    }
+    if x.n > 0 && !included_last {
+        sampled_row_indices.push(x.n - 1);
+    }
+
+    let sampled_n = sampled_row_indices.len();
+    let sample_len = sampled_n
+        .checked_mul(x.d)
+        .ok_or_else(|| CpdError::resource_limit("downsampled value length overflow"))?;
+    let source_len = match x.values {
+        DTypeView::F32(values) => values.len(),
+        DTypeView::F64(values) => values.len(),
+    };
+
+    let mut values = Vec::<f64>::with_capacity(sample_len);
+    let mut missing_mask = x.missing_mask.map(|_| Vec::<u8>::with_capacity(sample_len));
+    for &row in &sampled_row_indices {
+        for dim in 0..x.d {
+            let idx = source_index(x.layout, x.n, x.d, row, dim)?;
+            if idx >= source_len {
+                return Err(CpdError::invalid_input(format!(
+                    "downsample source index out of bounds at row={row}, dim={dim}: idx={idx}, len={source_len}"
+                )));
+            }
+
+            let value = match x.values {
+                DTypeView::F32(raw) => f64::from(raw[idx]),
+                DTypeView::F64(raw) => raw[idx],
+            };
+            values.push(value);
+
+            if let Some(mask) = x.missing_mask
+                && let Some(sampled_mask) = missing_mask.as_mut()
+            {
+                sampled_mask.push(mask[idx]);
+            }
+        }
+    }
+
+    Ok(ValidationDownsampledInput {
+        values,
+        missing_mask,
+        sampled_row_indices,
+    })
+}
+
+fn remap_validation_result(
+    mut result: OfflineChangePointResult,
+    sampled_row_indices: Option<&[usize]>,
+    original_n: usize,
+) -> Result<OfflineChangePointResult, CpdError> {
+    let Some(sampled_row_indices) = sampled_row_indices else {
+        result.validate(original_n)?;
+        return Ok(result);
+    };
+
+    let mapped_breakpoints = remap_breakpoints_to_original(
+        result.breakpoints.as_slice(),
+        sampled_row_indices,
+        original_n,
+    )?;
+    result.breakpoints = mapped_breakpoints;
+    result.change_points = result
+        .breakpoints
+        .iter()
+        .copied()
+        .filter(|&breakpoint| breakpoint < original_n)
+        .collect::<Vec<_>>();
+    result.diagnostics.n = original_n;
+    result.segments = None;
+    result.validate(original_n)?;
+    Ok(result)
+}
+
+fn remap_breakpoints_to_original(
+    breakpoints: &[usize],
+    sampled_row_indices: &[usize],
+    original_n: usize,
+) -> Result<Vec<usize>, CpdError> {
+    if sampled_row_indices.is_empty() {
+        return Err(CpdError::invalid_input(
+            "cannot remap breakpoints with an empty sampled_row_indices map",
+        ));
+    }
+
+    let mut mapped = Vec::with_capacity(breakpoints.len());
+    for (idx, &breakpoint) in breakpoints.iter().enumerate() {
+        if breakpoint == 0 || breakpoint > sampled_row_indices.len() {
+            return Err(CpdError::invalid_input(format!(
+                "downsampled breakpoint[{idx}]={breakpoint} is out of range for sampled length {}",
+                sampled_row_indices.len()
+            )));
+        }
+        let source_row = sampled_row_indices[breakpoint - 1];
+        let mapped_breakpoint = source_row
+            .checked_add(1)
+            .ok_or_else(|| CpdError::resource_limit("remapped breakpoint overflow"))?;
+        if mapped_breakpoint > original_n {
+            return Err(CpdError::invalid_input(format!(
+                "remapped breakpoint[{idx}]={mapped_breakpoint} exceeds original n={original_n}"
+            )));
+        }
+        mapped.push(mapped_breakpoint);
+    }
+
+    validate_breakpoints(original_n, mapped.as_slice())?;
+    Ok(mapped)
+}
+
+fn run_offline_pipeline(
+    x: &TimeSeriesView<'_>,
+    pipeline: &PipelineConfig,
+) -> Result<OfflineChangePointResult, CpdError> {
+    let PipelineConfig::Offline {
+        detector,
+        cost,
+        constraints,
+    } = pipeline
+    else {
+        return Err(CpdError::invalid_input(
+            "validate_top_k only supports offline pipelines",
+        ));
+    };
+
+    validate_constraints_config(constraints)?;
+    let _ = validate_constraints(constraints, x.n)?;
+    let sanitized_view = if matches!(x.missing, MissingPolicy::Ignore) && !x.has_missing() {
+        Some(TimeSeriesView::new(
+            x.values,
+            x.n,
+            x.d,
+            x.layout,
+            x.missing_mask,
+            x.time,
+            MissingPolicy::Error,
+        )?)
+    } else {
+        None
+    };
+    let detect_view = sanitized_view.as_ref().unwrap_or(x);
+    let ctx = ExecutionContext::new(constraints);
+
+    match cost {
+        OfflineCostKind::L2 => {
+            run_offline_detector_with_cost(detect_view, detector, &ctx, CostL2Mean::default())
+        }
+        OfflineCostKind::Normal => run_offline_detector_with_cost(
+            detect_view,
+            detector,
+            &ctx,
+            CostNormalMeanVar::default(),
+        ),
+        OfflineCostKind::Nig => {
+            run_offline_detector_with_cost(detect_view, detector, &ctx, CostNIGMarginal::default())
+        }
+    }
+}
+
+fn run_offline_detector_with_cost<C: CostModel>(
+    x: &TimeSeriesView<'_>,
+    detector: &OfflineDetectorConfig,
+    ctx: &ExecutionContext<'_>,
+    cost_model: C,
+) -> Result<OfflineChangePointResult, CpdError> {
+    match detector {
+        OfflineDetectorConfig::Pelt(config) => {
+            Pelt::new(cost_model, config.clone())?.detect(x, ctx)
+        }
+        OfflineDetectorConfig::BinSeg(config) => {
+            BinSeg::new(cost_model, config.clone())?.detect(x, ctx)
+        }
+        OfflineDetectorConfig::Wbs(config) => Wbs::new(cost_model, config.clone())?.detect(x, ctx),
+    }
+}
+
+fn pipeline_with_seed_override(pipeline: &PipelineConfig, seed: Option<u64>) -> PipelineConfig {
+    let Some(seed_value) = seed else {
+        return pipeline.clone();
+    };
+
+    match pipeline {
+        PipelineConfig::Offline {
+            detector: OfflineDetectorConfig::Wbs(config),
+            cost,
+            constraints,
+        } => {
+            let mut seeded = config.clone();
+            seeded.seed = seed_value;
+            PipelineConfig::Offline {
+                detector: OfflineDetectorConfig::Wbs(seeded),
+                cost: *cost,
+                constraints: constraints.clone(),
+            }
+        }
+        _ => pipeline.clone(),
+    }
+}
+
+fn pipeline_with_scaled_penalty(
+    pipeline: &PipelineConfig,
+    scale: f64,
+    n: usize,
+    d: usize,
+    seed: Option<u64>,
+) -> Result<Option<PipelineConfig>, CpdError> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(CpdError::invalid_input(format!(
+            "penalty scale must be finite and > 0; got {scale}"
+        )));
+    }
+
+    let PipelineConfig::Offline {
+        detector,
+        cost,
+        constraints,
+    } = pipeline
+    else {
+        return Ok(None);
+    };
+
+    match detector {
+        OfflineDetectorConfig::Pelt(config) => {
+            let Some(stopping) =
+                scaled_stopping(&config.stopping, scale, n, d, config.params_per_segment)?
+            else {
+                return Ok(None);
+            };
+            let mut scaled = config.clone();
+            scaled.stopping = stopping;
+            Ok(Some(PipelineConfig::Offline {
+                detector: OfflineDetectorConfig::Pelt(scaled),
+                cost: *cost,
+                constraints: constraints.clone(),
+            }))
+        }
+        OfflineDetectorConfig::BinSeg(config) => {
+            let Some(stopping) =
+                scaled_stopping(&config.stopping, scale, n, d, config.params_per_segment)?
+            else {
+                return Ok(None);
+            };
+            let mut scaled = config.clone();
+            scaled.stopping = stopping;
+            Ok(Some(PipelineConfig::Offline {
+                detector: OfflineDetectorConfig::BinSeg(scaled),
+                cost: *cost,
+                constraints: constraints.clone(),
+            }))
+        }
+        OfflineDetectorConfig::Wbs(config) => {
+            let Some(stopping) =
+                scaled_stopping(&config.stopping, scale, n, d, config.params_per_segment)?
+            else {
+                return Ok(None);
+            };
+            let mut scaled = config.clone();
+            scaled.stopping = stopping;
+            if let Some(seed_value) = seed {
+                scaled.seed = seed_value;
+            }
+            Ok(Some(PipelineConfig::Offline {
+                detector: OfflineDetectorConfig::Wbs(scaled),
+                cost: *cost,
+                constraints: constraints.clone(),
+            }))
+        }
+    }
+}
+
+fn scaled_stopping(
+    stopping: &Stopping,
+    scale: f64,
+    n: usize,
+    d: usize,
+    params_per_segment: usize,
+) -> Result<Option<Stopping>, CpdError> {
+    match stopping {
+        Stopping::KnownK(_) => Ok(None),
+        Stopping::Penalized(penalty) => Ok(Some(Stopping::Penalized(scaled_penalty(
+            penalty,
+            scale,
+            n,
+            d,
+            params_per_segment,
+        )?))),
+        Stopping::PenaltyPath(path) => {
+            let mut scaled_path = Vec::with_capacity(path.len());
+            for penalty in path {
+                scaled_path.push(scaled_penalty(penalty, scale, n, d, params_per_segment)?);
+            }
+            Ok(Some(Stopping::PenaltyPath(scaled_path)))
+        }
+    }
+}
+
+fn scaled_penalty(
+    penalty: &Penalty,
+    scale: f64,
+    n: usize,
+    d: usize,
+    params_per_segment: usize,
+) -> Result<Penalty, CpdError> {
+    let base = penalty_value(penalty, n, d, params_per_segment)?;
+    let scaled = base * scale;
+    if !scaled.is_finite() || scaled <= 0.0 {
+        return Err(CpdError::invalid_input(format!(
+            "scaled penalty must be finite and > 0; base={base}, scale={scale}, scaled={scaled}"
+        )));
+    }
+    Ok(Penalty::Manual(scaled))
+}
+
+fn pairwise_stability_score(results: &[OfflineChangePointResult], tolerance: usize) -> f64 {
+    if results.len() < 2 {
+        return 1.0;
+    }
+
+    let mut pair_count = 0usize;
+    let mut total = 0.0;
+    for left in 0..results.len() - 1 {
+        for right in left + 1..results.len() {
+            total += jaccard_with_tolerance(
+                results[left].change_points.as_slice(),
+                results[right].change_points.as_slice(),
+                tolerance,
+            );
+            pair_count += 1;
+        }
+    }
+
+    if pair_count == 0 {
+        1.0
+    } else {
+        total / pair_count as f64
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BreakpointCluster {
+    anchor: usize,
+    pipelines: Vec<usize>,
+}
+
+fn breakpoint_agreement_score(results: &[OfflineChangePointResult], tolerance: usize) -> f64 {
+    if results.is_empty() {
+        return 0.0;
+    }
+
+    let mut clusters = Vec::<BreakpointCluster>::new();
+    for (pipeline_idx, result) in results.iter().enumerate() {
+        for &change_point in result.change_points.as_slice() {
+            let mut best_cluster = None;
+            let mut best_distance = usize::MAX;
+            for (cluster_idx, cluster) in clusters.iter().enumerate() {
+                let distance = cluster.anchor.abs_diff(change_point);
+                if distance <= tolerance && distance < best_distance {
+                    best_distance = distance;
+                    best_cluster = Some(cluster_idx);
+                }
+            }
+
+            if let Some(cluster_idx) = best_cluster {
+                let cluster = &mut clusters[cluster_idx];
+                if !cluster.pipelines.contains(&pipeline_idx) {
+                    cluster.pipelines.push(pipeline_idx);
+                }
+            } else {
+                clusters.push(BreakpointCluster {
+                    anchor: change_point,
+                    pipelines: vec![pipeline_idx],
+                });
+            }
+        }
+    }
+
+    if clusters.is_empty() {
+        return 1.0;
+    }
+
+    let pipeline_count = results.len() as f64;
+    let total_support = clusters
+        .iter()
+        .map(|cluster| cluster.pipelines.len() as f64 / pipeline_count)
+        .sum::<f64>();
+    total_support / clusters.len() as f64
+}
+
+fn jaccard_with_tolerance(left: &[usize], right: &[usize], tolerance: usize) -> f64 {
+    if left.is_empty() && right.is_empty() {
+        return 1.0;
+    }
+    let matches = count_tolerance_matches(left, right, tolerance);
+    let union = left.len() + right.len() - matches;
+    if union == 0 {
+        1.0
+    } else {
+        matches as f64 / union as f64
+    }
+}
+
+fn count_tolerance_matches(left: &[usize], right: &[usize], tolerance: usize) -> usize {
+    let mut i = 0usize;
+    let mut j = 0usize;
+    let mut matches = 0usize;
+
+    while i < left.len() && j < right.len() {
+        let left_cp = left[i];
+        let right_cp = right[j];
+        if left_cp.abs_diff(right_cp) <= tolerance {
+            matches += 1;
+            i += 1;
+            j += 1;
+            continue;
+        }
+        if left_cp < right_cp {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+
+    matches
+}
+
+fn compute_penalty_sensitivity(
+    validation_view: &TimeSeriesView<'_>,
+    pipeline_results: &[(PipelineConfig, OfflineChangePointResult)],
+    tolerance: usize,
+    seed: Option<u64>,
+    sampled_row_indices: Option<&[usize]>,
+    original_n: usize,
+    notes: &mut Vec<String>,
+) -> Result<Option<f64>, CpdError> {
+    let mut sensitivities = Vec::<f64>::new();
+
+    for (pipeline, base_result) in pipeline_results {
+        let Some(scaled_low) = pipeline_with_scaled_penalty(
+            pipeline,
+            PENALTY_SCALE_DOWN,
+            validation_view.n,
+            validation_view.d,
+            seed,
+        )?
+        else {
+            continue;
+        };
+        let Some(scaled_high) = pipeline_with_scaled_penalty(
+            pipeline,
+            PENALTY_SCALE_UP,
+            validation_view.n,
+            validation_view.d,
+            seed,
+        )?
+        else {
+            continue;
+        };
+
+        let low_result = match run_offline_pipeline(validation_view, &scaled_low) {
+            Ok(result) => remap_validation_result(result, sampled_row_indices, original_n)?,
+            Err(err) => {
+                notes.push(format!(
+                    "penalty sensitivity skipped for pipeline={} because 0.9x run failed: {err}",
+                    pipeline_id(pipeline)
+                ));
+                continue;
+            }
+        };
+
+        let high_result = match run_offline_pipeline(validation_view, &scaled_high) {
+            Ok(result) => remap_validation_result(result, sampled_row_indices, original_n)?,
+            Err(err) => {
+                notes.push(format!(
+                    "penalty sensitivity skipped for pipeline={} because 1.1x run failed: {err}",
+                    pipeline_id(pipeline)
+                ));
+                continue;
+            }
+        };
+
+        let low_overlap = jaccard_with_tolerance(
+            base_result.change_points.as_slice(),
+            low_result.change_points.as_slice(),
+            tolerance,
+        );
+        let high_overlap = jaccard_with_tolerance(
+            base_result.change_points.as_slice(),
+            high_result.change_points.as_slice(),
+            tolerance,
+        );
+        sensitivities.push((1.0 - 0.5 * (low_overlap + high_overlap)).clamp(0.0, 1.0));
+    }
+
+    if sensitivities.is_empty() {
+        notes.push(
+            "penalty_sensitivity unavailable because no validated pipelines used penalty-based stopping"
+                .to_string(),
+        );
+        Ok(None)
+    } else {
+        Ok(Some(mean_f64(sensitivities.as_slice())))
+    }
+}
+
+fn mean_f64(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().sum::<f64>() / values.len() as f64
+    }
 }
 
 fn score_candidate(
@@ -2096,7 +2784,6 @@ fn source_index(
     }
 }
 
-#[cfg(test)]
 fn pipeline_id(pipeline: &PipelineConfig) -> String {
     match pipeline {
         PipelineConfig::Offline {
@@ -2142,9 +2829,11 @@ mod tests {
     use super::{
         CalibrationFamily, CalibrationObservation, Objective, OfflineCostKind,
         OfflineDetectorConfig, OnlineDetectorConfig, PipelineConfig, confidence_formula,
-        evaluate_calibration, recommend,
+        evaluate_calibration, recommend, validate_top_k,
     };
-    use cpd_core::{Constraints, MemoryLayout, MissingPolicy, TimeIndex, TimeSeriesView};
+    use cpd_core::{
+        Constraints, MemoryLayout, MissingPolicy, Penalty, Stopping, TimeIndex, TimeSeriesView,
+    };
     use cpd_online::ObservationModel;
     use std::collections::BTreeSet;
 
@@ -2172,6 +2861,29 @@ mod tests {
             MissingPolicy::Ignore,
         )
         .expect("masked view should be valid")
+    }
+
+    fn make_recommendation(pipeline: PipelineConfig) -> super::Recommendation {
+        super::Recommendation {
+            pipeline,
+            resource_estimate: super::ResourceEstimate {
+                time_complexity: "test".to_string(),
+                memory_complexity: "test".to_string(),
+                relative_time_score: 0.5,
+                relative_memory_score: 0.5,
+            },
+            warnings: vec![],
+            explanation: super::Explanation {
+                summary: "test recommendation".to_string(),
+                drivers: vec![],
+                tradeoffs: vec![],
+            },
+            validation: None,
+            confidence: 0.8,
+            confidence_interval: (0.7, 0.9),
+            abstain_reason: None,
+            objective_fit: vec![],
+        }
     }
 
     fn pseudo_uniform_noise(state: &mut u64) -> f64 {
@@ -2628,6 +3340,152 @@ mod tests {
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["balanced", "speed", "accuracy", "robustness"]);
+    }
+
+    #[test]
+    fn validate_top_k_reports_high_scores_for_agreeing_pipelines() {
+        let mut values = vec![0.0; 180];
+        for item in values.iter_mut().take(120).skip(60) {
+            *item = 7.0;
+        }
+        for item in values.iter_mut().skip(120) {
+            *item = -4.0;
+        }
+        let view = make_univariate_view(&values);
+
+        let base_pipeline = PipelineConfig::Offline {
+            detector: OfflineDetectorConfig::Pelt(super::PeltConfig {
+                stopping: Stopping::KnownK(2),
+                params_per_segment: 2,
+                cancel_check_every: 16,
+            }),
+            cost: OfflineCostKind::L2,
+            constraints: Constraints {
+                min_segment_len: 8,
+                ..Constraints::default()
+            },
+        };
+        let recommendations = vec![
+            make_recommendation(base_pipeline.clone()),
+            make_recommendation(base_pipeline.clone()),
+            make_recommendation(base_pipeline),
+        ];
+
+        let report = validate_top_k(&view, &recommendations, 3, None, Some(17))
+            .expect("top-k validation should succeed");
+        assert_eq!(report.pipeline_results.len(), 3);
+        assert!(
+            report.stability_score > 0.95,
+            "expected high stability for agreeing pipelines, got {}",
+            report.stability_score
+        );
+        assert!(
+            report.agreement_score > 0.95,
+            "expected high agreement for agreeing pipelines, got {}",
+            report.agreement_score
+        );
+    }
+
+    #[test]
+    fn validate_top_k_reports_low_scores_for_disagreeing_pipelines() {
+        let mut state = 202_u64;
+        let values = (0..600)
+            .map(|_| pseudo_uniform_noise(&mut state))
+            .collect::<Vec<_>>();
+        let view = make_univariate_view(&values);
+
+        let constraints = Constraints {
+            min_segment_len: 12,
+            ..Constraints::default()
+        };
+        let recommendations = vec![
+            make_recommendation(PipelineConfig::Offline {
+                detector: OfflineDetectorConfig::Pelt(super::PeltConfig {
+                    stopping: Stopping::Penalized(Penalty::Manual(250.0)),
+                    params_per_segment: 2,
+                    cancel_check_every: 16,
+                }),
+                cost: OfflineCostKind::L2,
+                constraints: constraints.clone(),
+            }),
+            make_recommendation(PipelineConfig::Offline {
+                detector: OfflineDetectorConfig::Pelt(super::PeltConfig {
+                    stopping: Stopping::Penalized(Penalty::Manual(5.0)),
+                    params_per_segment: 2,
+                    cancel_check_every: 16,
+                }),
+                cost: OfflineCostKind::L2,
+                constraints: constraints.clone(),
+            }),
+            make_recommendation(PipelineConfig::Offline {
+                detector: OfflineDetectorConfig::Pelt(super::PeltConfig {
+                    stopping: Stopping::Penalized(Penalty::Manual(0.2)),
+                    params_per_segment: 2,
+                    cancel_check_every: 16,
+                }),
+                cost: OfflineCostKind::L2,
+                constraints,
+            }),
+        ];
+
+        let report = validate_top_k(&view, &recommendations, 3, None, Some(17))
+            .expect("top-k validation should succeed");
+        let cps = report
+            .pipeline_results
+            .iter()
+            .map(|(_, result)| result.change_points.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            report.stability_score < 0.70,
+            "expected low stability for disagreeing pipelines, got {}, cps={cps:?}",
+            report.stability_score,
+        );
+        assert!(
+            report.agreement_score < 0.80,
+            "expected low agreement for disagreeing pipelines, got {}, cps={cps:?}",
+            report.agreement_score,
+        );
+    }
+
+    #[test]
+    fn validate_top_k_computes_penalty_sensitivity_with_downsampling() {
+        let mut values = vec![0.0; 200];
+        for item in values.iter_mut().take(100).skip(50) {
+            *item = 10.0;
+        }
+        for item in values.iter_mut().take(150).skip(100) {
+            *item = -8.0;
+        }
+        for item in values.iter_mut().skip(150) {
+            *item = 4.0;
+        }
+        let view = make_univariate_view(&values);
+
+        let penalized_pipeline = PipelineConfig::Offline {
+            detector: OfflineDetectorConfig::Pelt(super::PeltConfig {
+                stopping: Stopping::Penalized(Penalty::Manual(6.0)),
+                params_per_segment: 2,
+                cancel_check_every: 16,
+            }),
+            cost: OfflineCostKind::L2,
+            constraints: Constraints {
+                min_segment_len: 10,
+                ..Constraints::default()
+            },
+        };
+        let recommendations = vec![
+            make_recommendation(penalized_pipeline.clone()),
+            make_recommendation(penalized_pipeline),
+        ];
+
+        let report = validate_top_k(&view, &recommendations, 2, Some(4), Some(99))
+            .expect("top-k validation should succeed");
+        assert!(report.penalty_sensitivity.is_some());
+        assert_eq!(
+            report.pipeline_results[0].1.breakpoints.last().copied(),
+            Some(values.len())
+        );
+        assert!(report.notes.iter().any(|note| note.contains("downsampled")));
     }
 
     #[test]

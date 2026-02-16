@@ -11,8 +11,8 @@ pub use diagnostics::{
 pub use recommendation::{
     CalibrationFamily, CalibrationMetrics, CalibrationObservation, Explanation,
     FamilyCalibrationMetrics, Objective, OfflineCostKind, OfflineDetectorConfig,
-    OnlineDetectorConfig, PipelineConfig, Recommendation, ResourceEstimate, ValidationSummary,
-    confidence_formula, evaluate_calibration, recommend,
+    OnlineDetectorConfig, PipelineConfig, Recommendation, ResourceEstimate, ValidationReport,
+    ValidationSummary, confidence_formula, evaluate_calibration, recommend, validate_top_k,
 };
 
 #[cfg(feature = "preprocess")]

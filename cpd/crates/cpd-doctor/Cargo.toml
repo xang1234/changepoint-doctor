@@ -34,6 +34,7 @@ repro-strict = ["cpd-offline/repro-strict", "cpd-online/repro-strict"]
 
 [dependencies]
 cpd-core = { version = "0.1.0", path = "../cpd-core" }
+cpd-costs = { version = "0.1.0", path = "../cpd-costs" }
 cpd-offline = { version = "0.1.0", path = "../cpd-offline" }
 cpd-online = { version = "0.1.0", path = "../cpd-online" }
 cpd-preprocess = { version = "0.1.0", path = "../cpd-preprocess", optional = true }

@@ -169,6 +169,7 @@ name = "cpd-doctor"
 version = "0.1.0"
 dependencies = [
  "cpd-core",
+ "cpd-costs",
  "cpd-offline",
  "cpd-online",
  "cpd-preprocess",
