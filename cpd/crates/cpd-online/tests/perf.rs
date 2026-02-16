@@ -112,16 +112,13 @@ fn emit_baseline_metrics_if_requested(
     })
 }
 
-fn run_baseline_core_perf_contract<F>(
+fn run_baseline_perf_contract<D: OnlineDetector>(
+    detector: &mut D,
     signal: &[f64],
     metrics_env: &str,
     scenario: &str,
     enforce: bool,
-    mut update_core: F,
-) -> Result<f64, CpdError>
-where
-    F: FnMut(f64) -> Result<(), CpdError>,
-{
+) -> Result<(f64, u64), CpdError> {
     if signal.len() < BASELINE_WARMUP_STEPS + BASELINE_MEASURE_STEPS {
         return Err(CpdError::invalid_input(format!(
             "baseline perf signal too short: len={}, required={}",
@@ -130,20 +127,34 @@ where
         )));
     }
 
+    let exec_ctx = ctx();
     for step in 0..BASELINE_WARMUP_STEPS {
-        update_core(signal[step])?;
+        detector.update(&[signal[step]], None, &exec_ctx)?;
     }
 
+    let mut max_update_us = 0_u64;
     let started_at = Instant::now();
     for step in 0..BASELINE_MEASURE_STEPS {
-        update_core(signal[BASELINE_WARMUP_STEPS + step])?;
+        let result = detector.update(&[signal[BASELINE_WARMUP_STEPS + step]], None, &exec_ctx)?;
+        let latency_us = result.processing_latency_us.ok_or_else(|| {
+            CpdError::invalid_input(format!(
+                "{scenario} detector did not report processing_latency_us"
+            ))
+        })?;
+        max_update_us = max_update_us.max(latency_us);
     }
     let elapsed = started_at.elapsed();
     let updates_per_sec = (BASELINE_MEASURE_STEPS as f64) / elapsed.as_secs_f64().max(1e-9);
 
-    emit_baseline_metrics_if_requested(metrics_env, scenario, updates_per_sec, 0, enforce)?;
+    emit_baseline_metrics_if_requested(
+        metrics_env,
+        scenario,
+        updates_per_sec,
+        max_update_us,
+        enforce,
+    )?;
 
-    Ok(updates_per_sec)
+    Ok((updates_per_sec, max_update_us))
 }
 
 #[test]
@@ -232,24 +243,24 @@ fn cusum_perf_contract() {
     let signal = make_signal(BASELINE_WARMUP_STEPS + BASELINE_MEASURE_STEPS);
     let mut detector = CusumDetector::new(CusumConfig {
         drift: 0.02,
-        threshold: 5.0,
+        threshold: 1_000_000.0,
         target_mean: 0.0,
         late_data_policy: LateDataPolicy::Reject,
     })
     .expect("CUSUM config should be valid");
 
-    let updates_per_sec = run_baseline_core_perf_contract(
+    let (updates_per_sec, max_update_us) = run_baseline_perf_contract(
+        &mut detector,
         &signal,
         "CPD_ONLINE_CUSUM_PERF_METRICS_OUT",
-        "cusum_upward_d1_core",
+        "cusum_upward_d1_update",
         enforce,
-        |x| detector.update_core(x),
     )
     .expect("CUSUM perf run should succeed");
 
     println!(
-        "CUSUM core perf: steps={} elapsed-driven updates_per_sec={:.2} enforce={}",
-        BASELINE_MEASURE_STEPS, updates_per_sec, enforce
+        "CUSUM update perf: steps={} updates_per_sec={:.2} max_update_us={} enforce={}",
+        BASELINE_MEASURE_STEPS, updates_per_sec, max_update_us, enforce
     );
 
     if enforce {
@@ -257,6 +268,10 @@ fn cusum_perf_contract() {
             updates_per_sec >= BASELINE_SLO_UPDATES_PER_SEC,
             "CUSUM throughput SLO failed: observed={updates_per_sec:.2} updates/sec, threshold={} updates/sec",
             BASELINE_SLO_UPDATES_PER_SEC
+        );
+        assert!(
+            max_update_us > 0,
+            "CUSUM latency metric should remain meaningful (>0us); observed={max_update_us}"
         );
     } else {
         assert!(updates_per_sec.is_finite() && updates_per_sec > 0.0);
@@ -269,24 +284,24 @@ fn page_hinkley_perf_contract() {
     let signal = make_signal(BASELINE_WARMUP_STEPS + BASELINE_MEASURE_STEPS);
     let mut detector = PageHinkleyDetector::new(PageHinkleyConfig {
         delta: 0.02,
-        threshold: 5.0,
+        threshold: 1_000_000.0,
         initial_mean: 0.0,
         late_data_policy: LateDataPolicy::Reject,
     })
     .expect("Page-Hinkley config should be valid");
 
-    let updates_per_sec = run_baseline_core_perf_contract(
+    let (updates_per_sec, max_update_us) = run_baseline_perf_contract(
+        &mut detector,
         &signal,
         "CPD_ONLINE_PAGE_HINKLEY_PERF_METRICS_OUT",
-        "page_hinkley_d1_core",
+        "page_hinkley_d1_update",
         enforce,
-        |x| detector.update_core(x),
     )
     .expect("Page-Hinkley perf run should succeed");
 
     println!(
-        "Page-Hinkley core perf: steps={} elapsed-driven updates_per_sec={:.2} enforce={}",
-        BASELINE_MEASURE_STEPS, updates_per_sec, enforce
+        "Page-Hinkley update perf: steps={} updates_per_sec={:.2} max_update_us={} enforce={}",
+        BASELINE_MEASURE_STEPS, updates_per_sec, max_update_us, enforce
     );
 
     if enforce {
@@ -294,6 +309,10 @@ fn page_hinkley_perf_contract() {
             updates_per_sec >= BASELINE_SLO_UPDATES_PER_SEC,
             "Page-Hinkley throughput SLO failed: observed={updates_per_sec:.2} updates/sec, threshold={} updates/sec",
             BASELINE_SLO_UPDATES_PER_SEC
+        );
+        assert!(
+            max_update_us > 0,
+            "Page-Hinkley latency metric should remain meaningful (>0us); observed={max_update_us}"
         );
     } else {
         assert!(updates_per_sec.is_finite() && updates_per_sec > 0.0);

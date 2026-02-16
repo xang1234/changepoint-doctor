@@ -6,6 +6,7 @@ use crate::event_time::{
     LateDataCounters, LateDataPolicy, OverflowPolicy, compare_event_time_then_arrival,
 };
 use cpd_core::{CpdError, ExecutionContext, OnlineDetector, OnlineStepResult};
+use std::time::Instant;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
@@ -22,6 +23,43 @@ struct StepSummary {
     p_change: f64,
     alert: bool,
     run_length: usize,
+}
+
+#[derive(Clone, Debug)]
+struct LatencyEstimator {
+    window_started_at: Instant,
+    samples_in_window: u32,
+    last_estimate_us: u64,
+}
+
+impl LatencyEstimator {
+    const WINDOW: u32 = 256;
+
+    fn new() -> Self {
+        Self {
+            window_started_at: Instant::now(),
+            samples_in_window: 0,
+            last_estimate_us: 1,
+        }
+    }
+
+    fn observe(&mut self) -> u64 {
+        self.samples_in_window = self.samples_in_window.saturating_add(1);
+        if self.samples_in_window >= Self::WINDOW {
+            let elapsed_ns = self.window_started_at.elapsed().as_nanos();
+            let avg_ns = elapsed_ns / u128::from(Self::WINDOW);
+            // Ceil to 1us minimum so values are non-zero and easy to interpret.
+            let avg_us = ((avg_ns.saturating_add(999)) / 1_000) as u64;
+            self.last_estimate_us = avg_us.max(1);
+            self.window_started_at = Instant::now();
+            self.samples_in_window = 0;
+        }
+        self.last_estimate_us
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
 }
 
 fn normalize_threshold_ratio(score: f64, threshold: f64) -> f64 {
@@ -143,6 +181,7 @@ impl CusumState {
 pub struct CusumDetector {
     config: CusumConfig,
     state: CusumState,
+    latency_estimator: LatencyEstimator,
 }
 
 impl CusumDetector {
@@ -151,6 +190,7 @@ impl CusumDetector {
         Ok(Self {
             config,
             state: CusumState::new(),
+            latency_estimator: LatencyEstimator::new(),
         })
     }
 
@@ -162,32 +202,13 @@ impl CusumDetector {
         &self.state
     }
 
-    /// Fast core-update path for throughput benchmarking.
-    ///
-    /// This bypasses event-time handling and result materialization. It requires
-    /// that the pending late-data buffer is empty.
-    pub fn update_core(&mut self, x: f64) -> Result<(), CpdError> {
-        if !x.is_finite() {
-            return Err(CpdError::invalid_input(
-                "CUSUM core update requires finite observation",
-            ));
-        }
-        if !self.state.pending_events.is_empty() {
-            return Err(CpdError::invalid_input(
-                "CUSUM core update requires empty pending late-event buffer",
-            ));
-        }
-        let _ = self.apply_observation(x, None)?;
-        Ok(())
-    }
-
     fn step_summary(&self, t: usize, score: f64, run_length: usize) -> StepSummary {
         let p_change = normalize_threshold_ratio(score, self.config.threshold);
         StepSummary {
             t,
             score,
             p_change,
-            alert: score > self.config.threshold,
+            alert: score >= self.config.threshold,
             run_length,
         }
     }
@@ -201,7 +222,7 @@ impl CusumDetector {
     }
 
     fn materialize_step_result(
-        &self,
+        &mut self,
         summary: StepSummary,
         alert_reason: Option<String>,
     ) -> OnlineStepResult {
@@ -219,7 +240,7 @@ impl CusumDetector {
             }),
             run_length_mode: summary.run_length,
             run_length_mean: summary.run_length as f64,
-            processing_latency_us: Some(0),
+            processing_latency_us: Some(self.latency_estimator.observe()),
         }
     }
 
@@ -347,6 +368,7 @@ impl OnlineDetector for CusumDetector {
 
     fn reset(&mut self) {
         self.state = CusumState::new();
+        self.latency_estimator.reset();
     }
 
     fn update(
@@ -517,6 +539,7 @@ impl OnlineDetector for CusumDetector {
 
     fn load_state(&mut self, state: &Self::State) {
         self.state = state.clone();
+        self.latency_estimator.reset();
     }
 }
 
@@ -663,6 +686,7 @@ impl PageHinkleyState {
 pub struct PageHinkleyDetector {
     config: PageHinkleyConfig,
     state: PageHinkleyState,
+    latency_estimator: LatencyEstimator,
 }
 
 impl PageHinkleyDetector {
@@ -671,6 +695,7 @@ impl PageHinkleyDetector {
         Ok(Self {
             state: PageHinkleyState::new(config.initial_mean),
             config,
+            latency_estimator: LatencyEstimator::new(),
         })
     }
 
@@ -680,25 +705,6 @@ impl PageHinkleyDetector {
 
     pub fn state(&self) -> &PageHinkleyState {
         &self.state
-    }
-
-    /// Fast core-update path for throughput benchmarking.
-    ///
-    /// This bypasses event-time handling and result materialization. It requires
-    /// that the pending late-data buffer is empty.
-    pub fn update_core(&mut self, x: f64) -> Result<(), CpdError> {
-        if !x.is_finite() {
-            return Err(CpdError::invalid_input(
-                "Page-Hinkley core update requires finite observation",
-            ));
-        }
-        if !self.state.pending_events.is_empty() {
-            return Err(CpdError::invalid_input(
-                "Page-Hinkley core update requires empty pending late-event buffer",
-            ));
-        }
-        let _ = self.apply_observation(x, None)?;
-        Ok(())
     }
 
     fn score(&self) -> f64 {
@@ -711,7 +717,7 @@ impl PageHinkleyDetector {
             t,
             score,
             p_change,
-            alert: score > self.config.threshold,
+            alert: score >= self.config.threshold,
             run_length,
         }
     }
@@ -725,7 +731,7 @@ impl PageHinkleyDetector {
     }
 
     fn materialize_step_result(
-        &self,
+        &mut self,
         summary: StepSummary,
         alert_reason: Option<String>,
     ) -> OnlineStepResult {
@@ -743,7 +749,7 @@ impl PageHinkleyDetector {
             }),
             run_length_mode: summary.run_length,
             run_length_mean: summary.run_length as f64,
-            processing_latency_us: Some(0),
+            processing_latency_us: Some(self.latency_estimator.observe()),
         }
     }
 
@@ -896,6 +902,7 @@ impl OnlineDetector for PageHinkleyDetector {
 
     fn reset(&mut self) {
         self.state = PageHinkleyState::new(self.config.initial_mean);
+        self.latency_estimator.reset();
     }
 
     fn update(
@@ -1066,6 +1073,7 @@ impl OnlineDetector for PageHinkleyDetector {
 
     fn load_state(&mut self, state: &Self::State) {
         self.state = state.clone();
+        self.latency_estimator.reset();
     }
 }
 
