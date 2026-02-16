@@ -397,8 +397,11 @@ fn build_subsample_indices(n: usize, cfg: &DoctorDiagnosticsConfig) -> (Vec<usiz
     if n > cfg.subsample_threshold {
         used_subsampling = true;
         let base_target = (n / 10).max(1);
-        let target = base_target.clamp(cfg.subsample_target_min, cfg.subsample_target_max);
-        stride = div_ceil(n, target).max(1);
+        let target = base_target
+            .clamp(cfg.subsample_target_min, cfg.subsample_target_max)
+            .min(n);
+        // Use floor division so the realized sample count stays at/above the target.
+        stride = (n / target).max(1);
     }
 
     let mut indices = Vec::with_capacity(n.div_ceil(stride) + 1);
@@ -414,10 +417,6 @@ fn build_subsample_indices(n: usize, cfg: &DoctorDiagnosticsConfig) -> (Vec<usiz
     }
 
     (indices, used_subsampling, stride)
-}
-
-fn div_ceil(n: usize, d: usize) -> usize {
-    (n + d - 1) / d
 }
 
 fn estimate_sampling_rate_hz(time: TimeIndex<'_>, epsilon: f64) -> Option<f64> {
@@ -469,37 +468,44 @@ fn compute_missing_overview(
     };
 
     let mut longest_nan_run = 0usize;
-    let mut current_run = 0usize;
-    let mut missing_timestamps = 0usize;
+    let mut block_weight = 0usize;
+    let mut random_weight = 0usize;
 
-    for t in 0..x.n {
-        let mut missing_any = false;
-        for j in 0..x.d {
+    for j in 0..x.d {
+        let mut dim_missing_count = 0usize;
+        let mut dim_longest_run = 0usize;
+        let mut dim_current_run = 0usize;
+
+        for t in 0..x.n {
             let (_, is_missing) = accessor.value_and_missing(t, j)?;
             if is_missing {
-                missing_any = true;
-                break;
+                dim_missing_count += 1;
+                dim_current_run += 1;
+                dim_longest_run = dim_longest_run.max(dim_current_run);
+            } else {
+                dim_current_run = 0;
             }
         }
 
-        if missing_any {
-            missing_timestamps += 1;
-            current_run += 1;
-            longest_nan_run = longest_nan_run.max(current_run);
+        longest_nan_run = longest_nan_run.max(dim_longest_run);
+        if dim_missing_count == 0 {
+            continue;
+        }
+
+        let block_threshold = 8usize.max(dim_missing_count.div_ceil(4));
+        if dim_longest_run >= block_threshold {
+            block_weight = block_weight.saturating_add(dim_missing_count);
         } else {
-            current_run = 0;
+            random_weight = random_weight.saturating_add(dim_missing_count);
         }
     }
 
-    let missing_pattern = if missing_timestamps == 0 {
+    let missing_pattern = if block_weight == 0 && random_weight == 0 {
         MissingPattern::None
+    } else if block_weight >= random_weight {
+        MissingPattern::Block
     } else {
-        let block_threshold = ((missing_timestamps + 3) / 4).max(8);
-        if longest_nan_run >= block_threshold {
-            MissingPattern::Block
-        } else {
-            MissingPattern::Random
-        }
+        MissingPattern::Random
     };
 
     Ok(MissingOverview {
@@ -754,54 +760,66 @@ fn dominant_period_hint(
     }
 
     let mut strengths = vec![0.0; max_lag + 1];
-    for lag in 1..=max_lag {
-        strengths[lag] = autocorr_at_lag(series, lag, epsilon).abs();
+    for (lag, strength) in strengths.iter_mut().enumerate().take(max_lag + 1).skip(1) {
+        // Use positive correlation only so half-period anti-correlation does not masquerade as seasonality.
+        *strength = autocorr_at_lag(series, lag, epsilon).max(0.0);
     }
 
-    let mut best_period = 0usize;
-    let mut best_strength = 0.0;
-    let mut best_score = 0.0;
-
+    let mut peaks = Vec::<(usize, f64)>::new();
     for lag in 2..=max_lag {
         let left = strengths[lag - 1];
+        let center = strengths[lag];
         let right = if lag == max_lag {
             strengths[lag]
         } else {
             strengths[lag + 1]
         };
-        let is_peak = strengths[lag] > epsilon && strengths[lag] >= left && strengths[lag] >= right;
-        let score = strengths[lag] / (lag as f64).sqrt();
-        if is_peak
-            && (score > best_score
-                || (score == best_score && (best_period == 0 || lag < best_period)))
-        {
-            best_strength = strengths[lag];
-            best_score = score;
-            best_period = lag;
+        if center > epsilon && center >= left && center >= right {
+            peaks.push((lag, center));
         }
     }
 
-    if best_period == 0 {
-        for lag in 2..=max_lag {
-            let score = strengths[lag] / (lag as f64).sqrt();
-            if score > best_score
-                || (score == best_score && (best_period == 0 || lag < best_period))
-            {
-                best_strength = strengths[lag];
-                best_score = score;
-                best_period = lag;
+    if peaks.is_empty() {
+        for (lag, strength) in strengths
+            .iter()
+            .copied()
+            .enumerate()
+            .take(max_lag + 1)
+            .skip(2)
+        {
+            if strength > epsilon {
+                peaks.push((lag, strength));
             }
         }
     }
 
-    if best_period == 0 || best_strength <= epsilon {
-        None
-    } else {
-        Some(DominantPeriodHint {
-            period: best_period,
-            strength: best_strength,
-        })
+    if peaks.is_empty() {
+        return None;
     }
+
+    let max_strength = peaks
+        .iter()
+        .map(|(_, strength)| *strength)
+        .fold(0.0_f64, f64::max);
+    let strong_cutoff = (max_strength * 0.95).max(epsilon);
+
+    let mut fundamental = peaks
+        .iter()
+        .copied()
+        .filter(|(_, strength)| *strength >= strong_cutoff)
+        .min_by_key(|(lag, _)| *lag);
+
+    if fundamental.is_none() {
+        fundamental = peaks
+            .into_iter()
+            .max_by(|(lag_a, strength_a), (lag_b, strength_b)| {
+                strength_a
+                    .total_cmp(strength_b)
+                    .then_with(|| lag_b.cmp(lag_a))
+            });
+    }
+
+    fundamental.map(|(period, strength)| DominantPeriodHint { period, strength })
 }
 
 fn detrend_linear(series: &[f64], epsilon: f64) -> Vec<f64> {
@@ -1063,26 +1081,27 @@ mod tests {
     #[test]
     fn periodic_signal_yields_period_hint() {
         let period = 12usize;
-        let template = [
-            0.2_f64, 1.5, -0.4, 2.1, 0.7, -1.2, 0.5, 1.3, -0.9, 0.8, -1.4, 0.4,
-        ];
-        let mut values = Vec::with_capacity(720);
-        for _ in 0..(720 / period) {
-            values.extend(template);
-        }
+        let mut state = 17_u64;
+        let values = (0..1024)
+            .map(|t| {
+                let theta = 2.0 * std::f64::consts::PI * t as f64 / period as f64;
+                theta.sin() + 0.05 * pseudo_uniform_noise(&mut state)
+            })
+            .collect::<Vec<_>>();
 
         let view = make_univariate_view(&values);
         let report =
             compute_diagnostics(&view, &DoctorDiagnosticsConfig::default()).expect("diagnostics");
 
+        let top = report
+            .summary
+            .dominant_period_hints
+            .first()
+            .expect("period hint should exist");
         assert!(
-            report
-                .summary
-                .dominant_period_hints
-                .iter()
-                .any(|hint| { (hint.period as isize - period as isize).abs() <= 1 }),
+            (top.period as isize - period as isize).abs() <= 1,
             "period hints: {:?}",
-            report.summary.dominant_period_hints
+            report.summary.dominant_period_hints,
         );
     }
 
@@ -1151,6 +1170,36 @@ mod tests {
     }
 
     #[test]
+    fn multivariate_random_missing_aggregates_as_random() {
+        let n = 256usize;
+        let d = 4usize;
+        let values = vec![1.0_f64; n * d];
+        let mut mask = vec![0_u8; n * d];
+
+        for t in 0..n {
+            for j in 0..d {
+                if (t + j * 7) % 23 == 0 {
+                    mask[t * d + j] = 1;
+                }
+            }
+        }
+
+        let view = TimeSeriesView::from_f64(
+            &values,
+            n,
+            d,
+            MemoryLayout::CContiguous,
+            Some(&mask),
+            TimeIndex::None,
+            MissingPolicy::Ignore,
+        )
+        .expect("masked multivariate view");
+        let report =
+            compute_diagnostics(&view, &DoctorDiagnosticsConfig::default()).expect("diagnostics");
+        assert_eq!(report.summary.missing_pattern, MissingPattern::Random);
+    }
+
+    #[test]
     fn large_series_triggers_subsampling() {
         let n = 120_000;
         let values = (0..n).map(|i| i as f64).collect::<Vec<_>>();
@@ -1162,6 +1211,18 @@ mod tests {
         assert!(report.subsample_stride > 1);
         assert!(report.subsample_n <= 50_001);
         assert!(report.subsample_n >= 10_000);
+    }
+
+    #[test]
+    fn near_threshold_subsampling_meets_minimum_target() {
+        let cfg = DoctorDiagnosticsConfig::default();
+        let n = cfg.subsample_threshold + 1;
+        let values = (0..n).map(|i| i as f64).collect::<Vec<_>>();
+        let view = make_univariate_view(&values);
+        let report = compute_diagnostics(&view, &cfg).expect("diagnostics");
+
+        assert!(report.used_subsampling);
+        assert!(report.subsample_n >= cfg.subsample_target_min.min(n));
     }
 
     #[test]
