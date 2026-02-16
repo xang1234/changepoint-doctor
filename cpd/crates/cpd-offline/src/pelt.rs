@@ -9,9 +9,11 @@ use cpd_core::{
 };
 use cpd_costs::CostModel;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::time::Instant;
 
 const DEFAULT_CANCEL_CHECK_EVERY: usize = 1000;
+const DEFAULT_PARAMS_PER_SEGMENT: usize = 2;
 const KNOWN_K_MAX_DOUBLINGS: usize = 80;
 const KNOWN_K_MAX_BISECTION_ITERS: usize = 64;
 
@@ -99,6 +101,14 @@ struct KnownKSearchResult {
     iterations: usize,
 }
 
+#[derive(Clone, Debug)]
+struct ResolvedPenalty {
+    penalty: Penalty,
+    beta: f64,
+    params_per_segment: usize,
+    params_source: &'static str,
+}
+
 fn checked_counter_increment(counter: &mut usize, name: &str) -> Result<(), CpdError> {
     *counter = counter
         .checked_add(1)
@@ -106,19 +116,49 @@ fn checked_counter_increment(counter: &mut usize, name: &str) -> Result<(), CpdE
     Ok(())
 }
 
-fn resolve_penalty_beta(
+fn resolve_penalty_params<C: CostModel>(
+    model: &C,
+    penalty: &Penalty,
+    configured_params_per_segment: usize,
+) -> (usize, &'static str) {
+    match penalty {
+        Penalty::BIC | Penalty::AIC => {
+            if configured_params_per_segment == DEFAULT_PARAMS_PER_SEGMENT {
+                (model.penalty_params_per_segment(), "model_default")
+            } else {
+                (configured_params_per_segment, "config_override")
+            }
+        }
+        Penalty::Manual(_) => (configured_params_per_segment, "config"),
+    }
+}
+
+fn resolve_penalty_beta<C: CostModel>(
+    model: &C,
     penalty: &Penalty,
     n: usize,
     d: usize,
-    params_per_segment: usize,
-) -> Result<f64, CpdError> {
+    configured_params_per_segment: usize,
+) -> Result<ResolvedPenalty, CpdError> {
+    let (params_per_segment, params_source) =
+        resolve_penalty_params(model, penalty, configured_params_per_segment);
+    if params_per_segment == 0 {
+        return Err(CpdError::invalid_input(
+            "resolved params_per_segment must be >= 1; got 0",
+        ));
+    }
     let beta = penalty_value(penalty, n, d, params_per_segment)?;
     if !beta.is_finite() || beta <= 0.0 {
         return Err(CpdError::invalid_input(format!(
             "resolved penalty must be finite and > 0.0; got beta={beta}"
         )));
     }
-    Ok(beta)
+    Ok(ResolvedPenalty {
+        penalty: penalty.clone(),
+        beta,
+        params_per_segment,
+        params_source,
+    })
 }
 
 fn evaluate_segment_cost<C: CostModel>(
@@ -352,6 +392,210 @@ fn run_pelt_penalized<C: CostModel>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn run_pelt_penalty_path<C: CostModel>(
+    model: &C,
+    cache: &C::Cache,
+    x: &TimeSeriesView<'_>,
+    validated: &ValidatedConstraints,
+    betas: &[f64],
+    prune_candidates: bool,
+    cancel_check_every: usize,
+    ctx: &ExecutionContext<'_>,
+    started_at: Instant,
+    runtime: &mut RuntimeStats,
+) -> Result<Vec<KernelResult>, CpdError> {
+    if betas.is_empty() {
+        return Err(CpdError::invalid_input(
+            "run_pelt_penalty_path requires at least one beta",
+        ));
+    }
+    for (idx, &beta) in betas.iter().enumerate() {
+        if !beta.is_finite() || beta <= 0.0 {
+            return Err(CpdError::invalid_input(format!(
+                "run_pelt_penalty_path beta[{idx}] must be finite and > 0; got {beta}"
+            )));
+        }
+    }
+
+    let targets = build_targets(validated, x.n);
+    let total_targets = targets.len().max(1);
+    let min_segment_len = validated.min_segment_len;
+
+    #[derive(Clone, Debug)]
+    struct PathState {
+        f: Vec<f64>,
+        last_cp: Vec<usize>,
+        changes: Vec<usize>,
+        candidate_set: Vec<usize>,
+        run_cost_queries: usize,
+        run_considered: usize,
+        run_pruned: usize,
+    }
+
+    let mut states = Vec::with_capacity(betas.len());
+    for &beta in betas {
+        let mut f = vec![f64::INFINITY; x.n + 1];
+        let mut last_cp = vec![usize::MAX; x.n + 1];
+        let mut changes = vec![usize::MAX; x.n + 1];
+        f[0] = -beta;
+        last_cp[0] = 0;
+        changes[0] = 0;
+        states.push(PathState {
+            f,
+            last_cp,
+            changes,
+            candidate_set: vec![0usize],
+            run_cost_queries: 0,
+            run_considered: 0,
+            run_pruned: 0,
+        });
+    }
+
+    for (target_idx, &t) in targets.iter().enumerate() {
+        if target_idx.is_multiple_of(cancel_check_every) {
+            ctx.check_cancelled_every(target_idx, 1)?;
+            match ctx.check_time_budget(started_at)? {
+                BudgetStatus::WithinBudget => {}
+                BudgetStatus::ExceededSoftDegrade => {
+                    runtime.soft_budget_exceeded = true;
+                }
+            }
+        }
+
+        let mut segment_cost_cache: HashMap<usize, f64> = HashMap::new();
+
+        for (path_idx, state) in states.iter_mut().enumerate() {
+            let beta = betas[path_idx];
+            let mut scored = vec![None; state.candidate_set.len()];
+            let mut best_cost = f64::INFINITY;
+            let mut best_tau = usize::MAX;
+            let mut best_changes = usize::MAX;
+
+            for (idx, &tau) in state.candidate_set.iter().enumerate() {
+                if t <= tau || t - tau < min_segment_len {
+                    continue;
+                }
+                if !state.f[tau].is_finite() {
+                    continue;
+                }
+
+                let proposed_changes = if tau == 0 {
+                    state.changes[tau]
+                } else {
+                    state.changes[tau].saturating_add(1)
+                };
+
+                if let Some(max_change_points) = validated.max_change_points
+                    && proposed_changes > max_change_points
+                {
+                    continue;
+                }
+
+                let segment_cost = if let Some(cost) = segment_cost_cache.get(&tau) {
+                    *cost
+                } else {
+                    let cost = evaluate_segment_cost(model, cache, tau, t, ctx, runtime)?;
+                    segment_cost_cache.insert(tau, cost);
+                    cost
+                };
+
+                checked_counter_increment(&mut state.run_cost_queries, "run_cost_queries")?;
+                checked_counter_increment(
+                    &mut runtime.candidates_considered,
+                    "candidates_considered",
+                )?;
+                checked_counter_increment(&mut state.run_considered, "run_candidates_considered")?;
+
+                let score_no_penalty = state.f[tau] + segment_cost;
+                if !score_no_penalty.is_finite() {
+                    return Err(CpdError::numerical_issue(format!(
+                        "non-finite score without penalty at t={t}, tau={tau}, path_idx={path_idx}: F(tau)={}, segment_cost={segment_cost}, score_no_penalty={score_no_penalty}",
+                        state.f[tau]
+                    )));
+                }
+
+                let candidate = score_no_penalty + beta;
+                if !candidate.is_finite() {
+                    return Err(CpdError::numerical_issue(format!(
+                        "non-finite objective at t={t}, tau={tau}, path_idx={path_idx}: F(tau)={}, segment_cost={segment_cost}, beta={beta}, candidate={candidate}",
+                        state.f[tau]
+                    )));
+                }
+
+                scored[idx] = Some((score_no_penalty, proposed_changes));
+
+                if candidate < best_cost || (candidate == best_cost && tau < best_tau) {
+                    best_cost = candidate;
+                    best_tau = tau;
+                    best_changes = proposed_changes;
+                }
+            }
+
+            if best_tau == usize::MAX {
+                return Err(CpdError::invalid_input(format!(
+                    "no feasible segmentation under constraints at t={t} for penalty_path[{path_idx}] (beta={beta}); check min_segment_len, candidate_splits/jump, and max_change_points"
+                )));
+            }
+
+            state.f[t] = best_cost;
+            state.last_cp[t] = best_tau;
+            state.changes[t] = best_changes;
+
+            let mut next_candidate_set = Vec::with_capacity(state.candidate_set.len() + 1);
+            if prune_candidates {
+                for (idx, &tau) in state.candidate_set.iter().enumerate() {
+                    if let Some((score_no_penalty, _)) = scored[idx] {
+                        if score_no_penalty < best_cost {
+                            next_candidate_set.push(tau);
+                        } else {
+                            checked_counter_increment(
+                                &mut runtime.candidates_pruned,
+                                "candidates_pruned",
+                            )?;
+                            checked_counter_increment(
+                                &mut state.run_pruned,
+                                "run_candidates_pruned",
+                            )?;
+                        }
+                    } else {
+                        next_candidate_set.push(tau);
+                    }
+                }
+            } else {
+                next_candidate_set.extend_from_slice(&state.candidate_set);
+            }
+
+            if t < x.n {
+                next_candidate_set.push(t);
+            }
+            state.candidate_set = next_candidate_set;
+        }
+
+        ctx.report_progress((target_idx + 1) as f32 / total_targets as f32);
+    }
+
+    let mut out = Vec::with_capacity(states.len());
+    for (path_idx, state) in states.iter().enumerate() {
+        if !state.f[x.n].is_finite() {
+            return Err(CpdError::invalid_input(format!(
+                "no feasible segmentation reached terminal index n for penalty_path[{path_idx}]"
+            )));
+        }
+        let (breakpoints, change_count) = reconstruct_breakpoints(x.n, &state.last_cp)?;
+        out.push(KernelResult {
+            breakpoints,
+            change_count,
+            objective: state.f[x.n],
+            cost_evals: state.run_cost_queries,
+            candidates_considered: state.run_considered,
+            candidates_pruned: state.run_pruned,
+        });
+    }
+
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_known_k_search<C: CostModel>(
     model: &C,
     cache: &C::Cache,
@@ -513,6 +757,7 @@ impl<C: CostModel> OfflineDetector for Pelt<C> {
         let mut runtime = RuntimeStats::default();
         let mut notes = vec![];
         let mut warnings = vec![];
+        let mut run_cost_note_label = "run_cost_evals";
 
         if let Some(max_depth) = validated.max_depth {
             warnings.push(format!(
@@ -522,14 +767,23 @@ impl<C: CostModel> OfflineDetector for Pelt<C> {
 
         let kernel = match &self.config.stopping {
             Stopping::Penalized(penalty) => {
-                let beta = resolve_penalty_beta(penalty, x.n, x.d, self.config.params_per_segment)?;
-                notes.push(format!("stopping=Penalized({penalty:?}), beta={beta}"));
+                let resolved = resolve_penalty_beta(
+                    &self.cost_model,
+                    penalty,
+                    x.n,
+                    x.d,
+                    self.config.params_per_segment,
+                )?;
+                notes.push(format!(
+                    "stopping=Penalized({penalty:?}), beta={}, params_per_segment={} ({})",
+                    resolved.beta, resolved.params_per_segment, resolved.params_source
+                ));
                 run_pelt_penalized(
                     &self.cost_model,
                     &cache,
                     x,
                     &validated,
-                    beta,
+                    resolved.beta,
                     true,
                     cancel_check_every,
                     ctx,
@@ -556,10 +810,57 @@ impl<C: CostModel> OfflineDetector for Pelt<C> {
                 known_k.kernel
             }
             Stopping::PenaltyPath(path) => {
-                return Err(CpdError::not_supported(format!(
-                    "PELT penalty sweep is deferred for this issue; got PenaltyPath of length {}",
-                    path.len()
-                )));
+                let mut resolved_path = Vec::with_capacity(path.len());
+                let mut betas = Vec::with_capacity(path.len());
+                for penalty in path {
+                    let resolved = resolve_penalty_beta(
+                        &self.cost_model,
+                        penalty,
+                        x.n,
+                        x.d,
+                        self.config.params_per_segment,
+                    )?;
+                    betas.push(resolved.beta);
+                    resolved_path.push(resolved);
+                }
+
+                notes.push(format!(
+                    "stopping=PenaltyPath(len={}), primary_index=0",
+                    resolved_path.len()
+                ));
+
+                let kernels = run_pelt_penalty_path(
+                    &self.cost_model,
+                    &cache,
+                    x,
+                    &validated,
+                    betas.as_slice(),
+                    true,
+                    cancel_check_every,
+                    ctx,
+                    started_at,
+                    &mut runtime,
+                )?;
+
+                for (idx, (resolved, kernel)) in
+                    resolved_path.iter().zip(kernels.iter()).enumerate()
+                {
+                    notes.push(format!(
+                        "penalty_path[{idx}]: penalty={:?}, beta={}, params_per_segment={} ({}), change_count={}, objective={}",
+                        resolved.penalty,
+                        resolved.beta,
+                        resolved.params_per_segment,
+                        resolved.params_source,
+                        kernel.change_count,
+                        kernel.objective
+                    ));
+                }
+
+                run_cost_note_label = "run_cost_queries";
+                kernels
+                    .into_iter()
+                    .next()
+                    .expect("PenaltyPath validated to be non-empty")
             }
         };
 
@@ -588,7 +889,7 @@ impl<C: CostModel> OfflineDetector for Pelt<C> {
             "final_objective={}, change_count={}",
             kernel.objective, kernel.change_count
         ));
-        notes.push(format!("run_cost_evals={}", kernel.cost_evals));
+        notes.push(format!("{run_cost_note_label}={}", kernel.cost_evals));
         notes.push(format!(
             "run_candidates_considered={}, run_candidates_pruned={}",
             kernel.candidates_considered, kernel.candidates_pruned
@@ -1271,18 +1572,20 @@ mod tests {
     }
 
     #[test]
-    fn penalty_path_returns_not_supported() {
+    fn penalty_path_returns_primary_solution_and_diagnostics() {
         let detector = Pelt::new(
             CostL2Mean::default(),
             PeltConfig {
-                stopping: Stopping::PenaltyPath(vec![Penalty::Manual(1.0)]),
+                stopping: Stopping::PenaltyPath(vec![Penalty::Manual(0.1), Penalty::Manual(80.0)]),
                 params_per_segment: 2,
                 cancel_check_every: 16,
             },
         )
         .expect("config should be valid");
 
-        let values = vec![0.0, 1.0, 2.0, 3.0];
+        let values = vec![
+            0.0, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 10.0, -5.0, -5.0, -5.0, -5.0,
+        ];
         let view = make_f64_view(
             &values,
             values.len(),
@@ -1292,10 +1595,91 @@ mod tests {
         );
         let constraints = constraints_with_min_segment_len(1);
         let ctx = ExecutionContext::new(&constraints);
-        let err = detector
+        let result = detector
             .detect(&view, &ctx)
-            .expect_err("PenaltyPath should be deferred");
-        assert!(matches!(err, cpd_core::CpdError::NotSupported(_)));
+            .expect("PenaltyPath should return the primary path solution");
+
+        assert_eq!(result.breakpoints, vec![4, 8, 12]);
+        assert!(
+            result
+                .diagnostics
+                .notes
+                .iter()
+                .any(|note| note.contains("stopping=PenaltyPath"))
+        );
+        assert!(
+            result
+                .diagnostics
+                .notes
+                .iter()
+                .any(|note| note.contains("penalty_path[0]"))
+        );
+        assert!(
+            result
+                .diagnostics
+                .notes
+                .iter()
+                .any(|note| note.contains("penalty_path[1]"))
+        );
+    }
+
+    #[test]
+    fn bic_uses_model_default_params_unless_overridden() {
+        let values = vec![
+            -1.0, -1.0, -1.0, -1.0, 6.0, 6.0, 6.0, 6.0, -4.0, -4.0, -4.0, -4.0,
+        ];
+        let view = make_f64_view(
+            &values,
+            values.len(),
+            1,
+            MemoryLayout::CContiguous,
+            MissingPolicy::Error,
+        );
+        let constraints = Constraints {
+            min_segment_len: 2,
+            ..Constraints::default()
+        };
+        let ctx = ExecutionContext::new(&constraints);
+
+        let model_default_detector = Pelt::new(
+            CostNormalMeanVar::default(),
+            PeltConfig {
+                stopping: Stopping::Penalized(Penalty::BIC),
+                params_per_segment: 2,
+                cancel_check_every: 8,
+            },
+        )
+        .expect("config should be valid");
+        let model_default_result = model_default_detector
+            .detect(&view, &ctx)
+            .expect("normal+BIC should detect");
+        assert!(
+            model_default_result
+                .diagnostics
+                .notes
+                .iter()
+                .any(|note| note.contains("params_per_segment=3 (model_default)"))
+        );
+
+        let override_detector = Pelt::new(
+            CostNormalMeanVar::default(),
+            PeltConfig {
+                stopping: Stopping::Penalized(Penalty::BIC),
+                params_per_segment: 5,
+                cancel_check_every: 8,
+            },
+        )
+        .expect("config should be valid");
+        let override_result = override_detector
+            .detect(&view, &ctx)
+            .expect("normal+BIC override should detect");
+        assert!(
+            override_result
+                .diagnostics
+                .notes
+                .iter()
+                .any(|note| note.contains("params_per_segment=5 (config_override)"))
+        );
     }
 
     #[test]

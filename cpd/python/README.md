@@ -107,6 +107,29 @@ low = cpd.detect_offline(
 )
 ```
 
+## Stopping and Penalty Guide
+
+Ruptures-compatible naming is supported in Python:
+
+- `n_bkps`: exact number of change points (`Stopping::KnownK`)
+- `pen`: manual penalty scalar (`Stopping::Penalized(Penalty::Manual(...))`)
+- `min_segment_len`: minimum segment size (`Constraints.min_segment_len`)
+
+When to use each stopping style:
+
+- `n_bkps` (`KnownK`): use when you know the expected number of changes and need an exact count.
+- `pen="bic"`: good default when you want automatic model-selection behavior that scales with sample size.
+- `pen="aic"`: less conservative than BIC; can recover weaker changes but may over-segment noisy data.
+- `pen=<float>`: use when you need tight operational control over sensitivity (lower finds more changes, higher finds fewer).
+- `stopping={"PenaltyPath": [...]}` (pipeline serde form): request multiple penalties in one PELT sweep and inspect diagnostics notes for each path entry.
+
+BIC/AIC complexity terms are model-aware by default:
+
+- `l2` uses `params_per_segment=2` (mean + residual variance proxy)
+- `normal` uses `params_per_segment=3` (mean + variance + residual term)
+
+Advanced users can still override `params_per_segment` in low-level pipeline detector config.
+
 ## Preprocess Config Contract
 
 `detect_offline(..., preprocess=...)` validates keys and method payloads.

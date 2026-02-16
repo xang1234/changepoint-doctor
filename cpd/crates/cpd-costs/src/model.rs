@@ -32,6 +32,14 @@ pub trait CostModel {
         false
     }
 
+    /// Effective per-dimension parameter count used by BIC/AIC penalties.
+    ///
+    /// Detectors multiply this by series dimensionality (`d`) to get the
+    /// effective model complexity term.
+    fn penalty_params_per_segment(&self) -> usize {
+        2
+    }
+
     /// Returns the cost for segment `[start, end)`.
     fn segment_cost(&self, cache: &Self::Cache, start: usize, end: usize) -> f64;
 
@@ -205,6 +213,7 @@ mod tests {
         let model = MockCostModel::new("mock-defaults");
         assert_eq!(model.missing_support(), MissingSupport::Reject);
         assert!(!model.supports_approx_cache());
+        assert_eq!(model.penalty_params_per_segment(), 2);
     }
 
     #[test]

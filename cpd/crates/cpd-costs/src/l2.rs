@@ -169,6 +169,10 @@ impl CostModel for CostL2Mean {
         "l2_mean"
     }
 
+    fn penalty_params_per_segment(&self) -> usize {
+        2
+    }
+
     fn validate(&self, x: &TimeSeriesView<'_>) -> Result<(), CpdError> {
         if x.n == 0 {
             return Err(CpdError::invalid_input(

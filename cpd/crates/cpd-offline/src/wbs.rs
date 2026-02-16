@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 const DEFAULT_CANCEL_CHECK_EVERY: usize = 1000;
+const DEFAULT_PARAMS_PER_SEGMENT: usize = 2;
 const DEFAULT_SEED: u64 = 0;
 
 #[cfg(feature = "rayon")]
@@ -158,6 +159,13 @@ struct SplitWindow {
     end_idx: usize,
 }
 
+#[derive(Clone, Debug)]
+struct ResolvedPenalty {
+    beta: f64,
+    params_per_segment: usize,
+    params_source: &'static str,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct StableRng {
     state: u64,
@@ -209,19 +217,48 @@ fn checked_counter_add(counter: &mut usize, delta: usize, name: &str) -> Result<
     Ok(())
 }
 
-fn resolve_penalty_beta(
+fn resolve_penalty_params<C: CostModel>(
+    model: &C,
+    penalty: &Penalty,
+    configured_params_per_segment: usize,
+) -> (usize, &'static str) {
+    match penalty {
+        Penalty::BIC | Penalty::AIC => {
+            if configured_params_per_segment == DEFAULT_PARAMS_PER_SEGMENT {
+                (model.penalty_params_per_segment(), "model_default")
+            } else {
+                (configured_params_per_segment, "config_override")
+            }
+        }
+        Penalty::Manual(_) => (configured_params_per_segment, "config"),
+    }
+}
+
+fn resolve_penalty_beta<C: CostModel>(
+    model: &C,
     penalty: &Penalty,
     n: usize,
     d: usize,
-    params_per_segment: usize,
-) -> Result<f64, CpdError> {
+    configured_params_per_segment: usize,
+) -> Result<ResolvedPenalty, CpdError> {
+    let (params_per_segment, params_source) =
+        resolve_penalty_params(model, penalty, configured_params_per_segment);
+    if params_per_segment == 0 {
+        return Err(CpdError::invalid_input(
+            "resolved params_per_segment must be >= 1; got 0",
+        ));
+    }
     let beta = penalty_value(penalty, n, d, params_per_segment)?;
     if !beta.is_finite() || beta <= 0.0 {
         return Err(CpdError::invalid_input(format!(
             "resolved penalty must be finite and > 0.0; got beta={beta}"
         )));
     }
-    Ok(beta)
+    Ok(ResolvedPenalty {
+        beta,
+        params_per_segment,
+        params_source,
+    })
 }
 
 fn evaluate_segment_cost<C: CostModel>(
@@ -1211,8 +1248,18 @@ impl<C: WbsModelBound> OfflineDetector for Wbs<C> {
                 ));
             }
             Stopping::Penalized(penalty) => {
-                let beta = resolve_penalty_beta(penalty, x.n, x.d, self.config.params_per_segment)?;
-                notes.push(format!("stopping=Penalized({penalty:?}), beta={beta}"));
+                let resolved = resolve_penalty_beta(
+                    &self.cost_model,
+                    penalty,
+                    x.n,
+                    x.d,
+                    self.config.params_per_segment,
+                )?;
+                let beta = resolved.beta;
+                notes.push(format!(
+                    "stopping=Penalized({penalty:?}), beta={beta}, params_per_segment={} ({})",
+                    resolved.params_per_segment, resolved.params_source
+                ));
 
                 let mut processed_frontier_items = 0usize;
                 loop {

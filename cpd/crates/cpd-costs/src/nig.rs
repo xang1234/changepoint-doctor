@@ -321,6 +321,10 @@ impl CostModel for CostNIGMarginal {
         "nig_marginal"
     }
 
+    fn penalty_params_per_segment(&self) -> usize {
+        3
+    }
+
     fn validate(&self, x: &TimeSeriesView<'_>) -> Result<(), CpdError> {
         self.prior.validate()?;
 
