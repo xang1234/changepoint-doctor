@@ -23,6 +23,15 @@ use cpd_online::{
     CusumDetector, CusumState, GeometricHazard, HazardSpec, LateDataPolicy, ObservationModel,
     ObservationStats, PageHinkleyConfig, PageHinkleyDetector, PageHinkleyState,
 };
+#[cfg(feature = "serde")]
+use cpd_online::{
+    BOCPD_DETECTOR_ID, CheckpointEnvelope, PayloadCodec, decode_checkpoint_envelope,
+    encode_checkpoint_envelope, load_bocpd_checkpoint, load_bocpd_checkpoint_file,
+    load_cusum_checkpoint, load_cusum_checkpoint_file, load_page_hinkley_checkpoint,
+    load_page_hinkley_checkpoint_file, load_state_from_checkpoint_envelope, save_bocpd_checkpoint,
+    save_bocpd_checkpoint_file, save_cusum_checkpoint, save_cusum_checkpoint_file,
+    save_page_hinkley_checkpoint, save_page_hinkley_checkpoint_file,
+};
 #[cfg(feature = "preprocess")]
 use cpd_preprocess::{
     DeseasonalizeConfig, DeseasonalizeMethod, DetrendConfig, DetrendMethod, PreprocessConfig,
@@ -30,10 +39,13 @@ use cpd_preprocess::{
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+#[cfg(feature = "serde")]
+use pyo3::types::PyBytes;
 use pyo3::types::{PyAnyMethods, PyDict, PyList, PyModule};
 use result_objects::{
     PyDiagnostics, PyOfflineChangePointResult, PyOnlineStepResult, PyPruningStats, PySegmentStats,
 };
+use std::path::PathBuf;
 
 fn parse_sequence(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
     values.extract::<Vec<f64>>().map_err(|_| {
@@ -54,6 +66,104 @@ fn parse_owned_series(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<OwnedSer
         DTypePolicy::KeepInput,
     )?;
     parsed.into_owned().map_err(cpd_error_to_pyerr)
+}
+
+#[cfg(feature = "serde")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PyCheckpointFormat {
+    Bytes,
+    Json,
+}
+
+#[cfg(feature = "serde")]
+impl PyCheckpointFormat {
+    fn parse(raw: &str) -> PyResult<Self> {
+        match raw.to_ascii_lowercase().as_str() {
+            "bytes" => Ok(Self::Bytes),
+            "json" => Ok(Self::Json),
+            _ => Err(PyValueError::new_err(format!(
+                "unsupported checkpoint format '{raw}'; expected one of: 'bytes', 'json'"
+            ))),
+        }
+    }
+
+    fn infer(raw: Option<&str>, state: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Some(raw) = raw {
+            return Self::parse(raw);
+        }
+        if state.downcast::<PyDict>().is_ok() {
+            return Ok(Self::Json);
+        }
+        Ok(Self::Bytes)
+    }
+
+    fn payload_codec(self) -> PayloadCodec {
+        match self {
+            Self::Bytes => PayloadCodec::Bincode,
+            Self::Json => PayloadCodec::Json,
+        }
+    }
+}
+
+fn parse_checkpoint_path(
+    path: Option<&Bound<'_, PyAny>>,
+    context: &str,
+) -> PyResult<Option<PathBuf>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if path.is_none() {
+        return Ok(None);
+    }
+
+    let os = PyModule::import(path.py(), "os")?;
+    let fspath = os.call_method1("fspath", (path,))?;
+    let raw: String = fspath.extract().map_err(|_| {
+        PyTypeError::new_err(format!("{context} path must be str or os.PathLike[str]"))
+    })?;
+    if raw.is_empty() {
+        return Err(PyValueError::new_err(format!(
+            "{context} path must be non-empty"
+        )));
+    }
+    Ok(Some(PathBuf::from(raw)))
+}
+
+#[cfg(feature = "serde")]
+fn checkpoint_output(
+    py: Python<'_>,
+    envelope: &CheckpointEnvelope,
+    format: PyCheckpointFormat,
+) -> PyResult<Py<PyAny>> {
+    let encoded = encode_checkpoint_envelope(envelope).map_err(cpd_error_to_pyerr)?;
+    match format {
+        PyCheckpointFormat::Bytes => Ok(PyBytes::new(py, &encoded).into_any().unbind()),
+        PyCheckpointFormat::Json => {
+            let json = PyModule::import(py, "json")?;
+            let value = json.call_method1("loads", (PyBytes::new(py, &encoded),))?;
+            Ok(value.unbind())
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn decode_checkpoint_input(
+    py: Python<'_>,
+    state: &Bound<'_, PyAny>,
+    format: PyCheckpointFormat,
+) -> PyResult<CheckpointEnvelope> {
+    let encoded = match format {
+        PyCheckpointFormat::Bytes => state.extract::<Vec<u8>>().map_err(|_| {
+            PyTypeError::new_err("checkpoint bytes input must be a bytes-like value")
+        })?,
+        PyCheckpointFormat::Json => {
+            let json = PyModule::import(py, "json")?;
+            let dumped = json.call_method1("dumps", (state,))?;
+            let dumped: String = dumped.extract()?;
+            dumped.into_bytes()
+        }
+    };
+    decode_checkpoint_envelope(&encoded).map_err(cpd_error_to_pyerr)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1392,20 +1502,117 @@ impl PyBocpd {
         self.detector.reset();
     }
 
-    fn save_state(&self) -> PyBocpdState {
-        self.detector.save_state().into()
+    #[pyo3(signature = (*, format = "bytes", path = None))]
+    fn save_state(
+        &self,
+        py: Python<'_>,
+        format: &str,
+        path: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        #[cfg(feature = "serde")]
+        {
+            let format = PyCheckpointFormat::parse(format)?;
+            let path = parse_checkpoint_path(path, "checkpoint")?;
+            let payload_codec = format.payload_codec();
+            if let Some(path) = path {
+                save_bocpd_checkpoint_file(&self.detector, &path, payload_codec)
+                    .map_err(cpd_error_to_pyerr)?;
+                return Ok(py.None());
+            }
+
+            let envelope =
+                save_bocpd_checkpoint(&self.detector, payload_codec).map_err(cpd_error_to_pyerr)?;
+            return checkpoint_output(py, &envelope, format);
+        }
+
+        #[cfg(not(feature = "serde"))]
+        {
+            let _ = (py, format, path);
+            Err(PyRuntimeError::new_err(
+                "checkpoint API requires cpd-python built with feature 'serde'",
+            ))
+        }
     }
 
-    fn load_state(&mut self, state: &PyBocpdState) -> PyResult<()> {
-        let observation = &self.detector.config().observation;
-        if !bocpd_state_matches_observation(&state.state, observation) {
-            return Err(PyValueError::new_err(format!(
-                "incompatible Bocpd state for model '{}': state run_stats variant does not match detector observation model",
-                bocpd_model_name(observation)
-            )));
+    #[pyo3(signature = (state = None, *, format = None, path = None))]
+    fn load_state(
+        &mut self,
+        py: Python<'_>,
+        state: Option<&Bound<'_, PyAny>>,
+        format: Option<&str>,
+        path: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let path = parse_checkpoint_path(path, "checkpoint")?;
+        if path.is_some() && state.is_some() {
+            return Err(PyValueError::new_err(
+                "load_state accepts either 'state' or 'path', not both",
+            ));
         }
-        self.detector.load_state(&state.state);
-        Ok(())
+
+        if let Some(path) = path {
+            if format.is_some() {
+                return Err(PyValueError::new_err(
+                    "load_state does not accept 'format' when loading from path",
+                ));
+            }
+
+            #[cfg(feature = "serde")]
+            {
+                load_bocpd_checkpoint_file(&mut self.detector, &path)
+                    .map_err(cpd_error_to_pyerr)?;
+                return Ok(());
+            }
+
+            #[cfg(not(feature = "serde"))]
+            {
+                let _ = (py, path);
+                return Err(PyRuntimeError::new_err(
+                    "checkpoint API requires cpd-python built with feature 'serde'",
+                ));
+            }
+        }
+
+        let state = state.ok_or_else(|| {
+            PyValueError::new_err("load_state requires checkpoint 'state' bytes/json or 'path'")
+        })?;
+
+        if let Ok(legacy_state) = state.extract::<PyRef<'_, PyBocpdState>>() {
+            let observation = &self.detector.config().observation;
+            if !bocpd_state_matches_observation(&legacy_state.state, observation) {
+                return Err(PyValueError::new_err(format!(
+                    "incompatible Bocpd state for model '{}': state run_stats variant does not match detector observation model",
+                    bocpd_model_name(observation)
+                )));
+            }
+            self.detector.load_state(&legacy_state.state);
+            return Ok(());
+        }
+
+        #[cfg(feature = "serde")]
+        {
+            let format = PyCheckpointFormat::infer(format, state)?;
+            let envelope = decode_checkpoint_input(py, state, format)?;
+            let decoded_state: BocpdState =
+                load_state_from_checkpoint_envelope(&envelope, BOCPD_DETECTOR_ID)
+                    .map_err(cpd_error_to_pyerr)?;
+            let observation = &self.detector.config().observation;
+            if !bocpd_state_matches_observation(&decoded_state, observation) {
+                return Err(PyValueError::new_err(format!(
+                    "incompatible Bocpd state for model '{}': state run_stats variant does not match detector observation model",
+                    bocpd_model_name(observation)
+                )));
+            }
+            load_bocpd_checkpoint(&mut self.detector, &envelope).map_err(cpd_error_to_pyerr)?;
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "serde"))]
+        {
+            let _ = (py, format);
+            Err(PyRuntimeError::new_err(
+                "checkpoint API requires cpd-python built with feature 'serde'",
+            ))
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -1464,12 +1671,100 @@ impl PyCusum {
         self.detector.reset();
     }
 
-    fn save_state(&self) -> PyCusumState {
-        self.detector.save_state().into()
+    #[pyo3(signature = (*, format = "bytes", path = None))]
+    fn save_state(
+        &self,
+        py: Python<'_>,
+        format: &str,
+        path: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        #[cfg(feature = "serde")]
+        {
+            let format = PyCheckpointFormat::parse(format)?;
+            let path = parse_checkpoint_path(path, "checkpoint")?;
+            let payload_codec = format.payload_codec();
+            if let Some(path) = path {
+                save_cusum_checkpoint_file(&self.detector, &path, payload_codec)
+                    .map_err(cpd_error_to_pyerr)?;
+                return Ok(py.None());
+            }
+
+            let envelope =
+                save_cusum_checkpoint(&self.detector, payload_codec).map_err(cpd_error_to_pyerr)?;
+            return checkpoint_output(py, &envelope, format);
+        }
+
+        #[cfg(not(feature = "serde"))]
+        {
+            let _ = (py, format, path);
+            Err(PyRuntimeError::new_err(
+                "checkpoint API requires cpd-python built with feature 'serde'",
+            ))
+        }
     }
 
-    fn load_state(&mut self, state: &PyCusumState) {
-        self.detector.load_state(&state.state);
+    #[pyo3(signature = (state = None, *, format = None, path = None))]
+    fn load_state(
+        &mut self,
+        py: Python<'_>,
+        state: Option<&Bound<'_, PyAny>>,
+        format: Option<&str>,
+        path: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let path = parse_checkpoint_path(path, "checkpoint")?;
+        if path.is_some() && state.is_some() {
+            return Err(PyValueError::new_err(
+                "load_state accepts either 'state' or 'path', not both",
+            ));
+        }
+
+        if let Some(path) = path {
+            if format.is_some() {
+                return Err(PyValueError::new_err(
+                    "load_state does not accept 'format' when loading from path",
+                ));
+            }
+
+            #[cfg(feature = "serde")]
+            {
+                load_cusum_checkpoint_file(&mut self.detector, &path)
+                    .map_err(cpd_error_to_pyerr)?;
+                return Ok(());
+            }
+
+            #[cfg(not(feature = "serde"))]
+            {
+                let _ = (py, path);
+                return Err(PyRuntimeError::new_err(
+                    "checkpoint API requires cpd-python built with feature 'serde'",
+                ));
+            }
+        }
+
+        let state = state.ok_or_else(|| {
+            PyValueError::new_err("load_state requires checkpoint 'state' bytes/json or 'path'")
+        })?;
+
+        if let Ok(legacy_state) = state.extract::<PyRef<'_, PyCusumState>>() {
+            self.detector.load_state(&legacy_state.state);
+            return Ok(());
+        }
+
+        #[cfg(feature = "serde")]
+        {
+            let format = PyCheckpointFormat::infer(format, state)?;
+            let envelope = decode_checkpoint_input(py, state, format)?;
+            load_cusum_checkpoint(&mut self.detector, &envelope).map_err(cpd_error_to_pyerr)?;
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "serde"))]
+        {
+            let _ = (py, format);
+            Err(PyRuntimeError::new_err(
+                "checkpoint API requires cpd-python built with feature 'serde'",
+            ))
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -1526,12 +1821,101 @@ impl PyPageHinkley {
         self.detector.reset();
     }
 
-    fn save_state(&self) -> PyPageHinkleyState {
-        self.detector.save_state().into()
+    #[pyo3(signature = (*, format = "bytes", path = None))]
+    fn save_state(
+        &self,
+        py: Python<'_>,
+        format: &str,
+        path: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        #[cfg(feature = "serde")]
+        {
+            let format = PyCheckpointFormat::parse(format)?;
+            let path = parse_checkpoint_path(path, "checkpoint")?;
+            let payload_codec = format.payload_codec();
+            if let Some(path) = path {
+                save_page_hinkley_checkpoint_file(&self.detector, &path, payload_codec)
+                    .map_err(cpd_error_to_pyerr)?;
+                return Ok(py.None());
+            }
+
+            let envelope = save_page_hinkley_checkpoint(&self.detector, payload_codec)
+                .map_err(cpd_error_to_pyerr)?;
+            return checkpoint_output(py, &envelope, format);
+        }
+
+        #[cfg(not(feature = "serde"))]
+        {
+            let _ = (py, format, path);
+            Err(PyRuntimeError::new_err(
+                "checkpoint API requires cpd-python built with feature 'serde'",
+            ))
+        }
     }
 
-    fn load_state(&mut self, state: &PyPageHinkleyState) {
-        self.detector.load_state(&state.state);
+    #[pyo3(signature = (state = None, *, format = None, path = None))]
+    fn load_state(
+        &mut self,
+        py: Python<'_>,
+        state: Option<&Bound<'_, PyAny>>,
+        format: Option<&str>,
+        path: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let path = parse_checkpoint_path(path, "checkpoint")?;
+        if path.is_some() && state.is_some() {
+            return Err(PyValueError::new_err(
+                "load_state accepts either 'state' or 'path', not both",
+            ));
+        }
+
+        if let Some(path) = path {
+            if format.is_some() {
+                return Err(PyValueError::new_err(
+                    "load_state does not accept 'format' when loading from path",
+                ));
+            }
+
+            #[cfg(feature = "serde")]
+            {
+                load_page_hinkley_checkpoint_file(&mut self.detector, &path)
+                    .map_err(cpd_error_to_pyerr)?;
+                return Ok(());
+            }
+
+            #[cfg(not(feature = "serde"))]
+            {
+                let _ = (py, path);
+                return Err(PyRuntimeError::new_err(
+                    "checkpoint API requires cpd-python built with feature 'serde'",
+                ));
+            }
+        }
+
+        let state = state.ok_or_else(|| {
+            PyValueError::new_err("load_state requires checkpoint 'state' bytes/json or 'path'")
+        })?;
+
+        if let Ok(legacy_state) = state.extract::<PyRef<'_, PyPageHinkleyState>>() {
+            self.detector.load_state(&legacy_state.state);
+            return Ok(());
+        }
+
+        #[cfg(feature = "serde")]
+        {
+            let format = PyCheckpointFormat::infer(format, state)?;
+            let envelope = decode_checkpoint_input(py, state, format)?;
+            load_page_hinkley_checkpoint(&mut self.detector, &envelope)
+                .map_err(cpd_error_to_pyerr)?;
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "serde"))]
+        {
+            let _ = (py, format);
+            Err(PyRuntimeError::new_err(
+                "checkpoint API requires cpd-python built with feature 'serde'",
+            ))
+        }
     }
 
     fn __repr__(&self) -> String {

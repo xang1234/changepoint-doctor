@@ -13,4 +13,4 @@ bindings = "pyo3"
 manifest-path = "../crates/cpd-python/Cargo.toml"
 module-name = "cpd._cpd_rs"
 python-source = "."
-features = ["extension-module"]
+features = ["extension-module", "serde"]

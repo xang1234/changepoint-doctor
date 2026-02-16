@@ -25,28 +25,41 @@ def _compare_steps(lhs: cpd.OnlineStepResult, rhs: cpd.OnlineStepResult) -> None
     assert lhs.run_length_mean == pytest.approx(rhs.run_length_mean)
 
 
-@pytest.mark.parametrize(
-    "factory",
-    [
+STREAMING_FACTORIES = [
+    (
+        "bocpd",
         lambda: cpd.Bocpd(
             model="gaussian_nig",
             hazard=1.0 / 200.0,
             max_run_length=512,
             alert_policy={"threshold": 0.35, "cooldown": 5, "min_run_length": 10},
         ),
+    ),
+    (
+        "cusum",
         lambda: cpd.Cusum(
             drift=0.0,
             threshold=6.0,
             target_mean=0.0,
             alert_policy={"threshold": 0.95, "cooldown": 5, "min_run_length": 10},
         ),
+    ),
+    (
+        "page_hinkley",
         lambda: cpd.PageHinkley(
             delta=0.0,
             threshold=6.0,
             initial_mean=0.0,
             alert_policy={"threshold": 0.95, "cooldown": 5, "min_run_length": 10},
         ),
-    ],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [factory for _, factory in STREAMING_FACTORIES],
+    ids=[name for name, _ in STREAMING_FACTORIES],
 )
 def test_streaming_step_function_alerts_near_change_point(factory) -> None:
     values = _step_signal()
@@ -92,26 +105,115 @@ def test_bocpd_checkpoint_restore_matches_continuation() -> None:
 
 @pytest.mark.parametrize(
     "factory",
-    [
-        lambda: cpd.Bocpd(
-            model="gaussian_nig",
-            hazard=1.0 / 200.0,
-            max_run_length=512,
-            alert_policy={"threshold": 0.35, "cooldown": 5, "min_run_length": 10},
-        ),
-        lambda: cpd.Cusum(
-            drift=0.0,
-            threshold=6.0,
-            target_mean=0.0,
-            alert_policy={"threshold": 0.95, "cooldown": 5, "min_run_length": 10},
-        ),
-        lambda: cpd.PageHinkley(
-            delta=0.0,
-            threshold=6.0,
-            initial_mean=0.0,
-            alert_policy={"threshold": 0.95, "cooldown": 5, "min_run_length": 10},
-        ),
-    ],
+    [factory for _, factory in STREAMING_FACTORIES],
+    ids=[name for name, _ in STREAMING_FACTORIES],
+)
+@pytest.mark.parametrize("checkpoint_format", ["bytes", "json"])
+def test_checkpoint_restore_matches_continuation_for_bytes_and_json(
+    factory, checkpoint_format: str
+) -> None:
+    values = _step_signal()
+    split = 95
+
+    baseline = factory()
+    baseline_steps = [baseline.update(float(x)) for x in values]
+
+    first = factory()
+    prefix_steps = [first.update(float(x)) for x in values[:split]]
+    state = first.save_state(format=checkpoint_format)
+
+    restored = factory()
+    if checkpoint_format == "bytes":
+        restored.load_state(state)
+    else:
+        restored.load_state(state, format="json")
+    tail_steps = [restored.update(float(x)) for x in values[split:]]
+    restored_steps = prefix_steps + tail_steps
+
+    assert len(restored_steps) == len(baseline_steps)
+    for lhs, rhs in zip(restored_steps, baseline_steps):
+        _compare_steps(lhs, rhs)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [factory for _, factory in STREAMING_FACTORIES],
+    ids=[name for name, _ in STREAMING_FACTORIES],
+)
+def test_checkpoint_restore_matches_continuation_for_file_path(factory, tmp_path) -> None:
+    values = _step_signal()
+    split = 95
+    path = tmp_path / "checkpoint.bin"
+
+    baseline = factory()
+    baseline_steps = [baseline.update(float(x)) for x in values]
+
+    first = factory()
+    prefix_steps = [first.update(float(x)) for x in values[:split]]
+    save_out = first.save_state(path=path)
+    assert save_out is None
+
+    restored = factory()
+    restored.load_state(path=path)
+    tail_steps = [restored.update(float(x)) for x in values[split:]]
+    restored_steps = prefix_steps + tail_steps
+
+    assert len(restored_steps) == len(baseline_steps)
+    for lhs, rhs in zip(restored_steps, baseline_steps):
+        _compare_steps(lhs, rhs)
+
+
+@pytest.mark.parametrize(
+    "detector_id,factory",
+    STREAMING_FACTORIES,
+    ids=[name for name, _ in STREAMING_FACTORIES],
+)
+def test_checkpoint_json_metadata_matches_rust_envelope(detector_id: str, factory) -> None:
+    detector = factory()
+    for value in [0.0, 0.0, 1.0]:
+        detector.update(value)
+
+    state = detector.save_state(format="json")
+    assert state["detector_id"] == detector_id
+    assert isinstance(state["state_schema_version"], int)
+    assert isinstance(state["engine_fingerprint"], str)
+    assert isinstance(state["created_at_ns"], int)
+    assert state["payload_codec"] == "json"
+    assert isinstance(state["payload_crc32"], int)
+    assert isinstance(state["payload"], list)
+    assert all(isinstance(item, int) for item in state["payload"])
+
+
+def test_checkpoint_load_rejects_crc_mismatch_with_clear_error() -> None:
+    detector = cpd.Cusum()
+    for value in [0.0, 0.0, 1.0]:
+        detector.update(value)
+
+    state = detector.save_state(format="json")
+    state["payload"][0] ^= 1
+
+    restored = cpd.Cusum()
+    with pytest.raises(ValueError, match="crc32 mismatch"):
+        restored.load_state(state, format="json")
+
+
+def test_checkpoint_load_rejects_unsupported_schema_version_with_clear_error() -> None:
+    detector = cpd.Cusum()
+    for value in [0.0, 0.0, 1.0]:
+        detector.update(value)
+
+    state = detector.save_state(format="json")
+    state["state_schema_version"] = 99
+
+    restored = cpd.Cusum()
+    with pytest.raises(ValueError, match="state_schema_version=99"):
+        restored.load_state(state, format="json")
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [factory for _, factory in STREAMING_FACTORIES],
+    ids=[name for name, _ in STREAMING_FACTORIES],
 )
 def test_update_many_matches_single_step_results(factory) -> None:
     values = _step_signal()
