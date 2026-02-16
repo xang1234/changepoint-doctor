@@ -182,6 +182,8 @@ dependencies = [
  "cpd-core",
  "cpd-offline",
  "cpd-online",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

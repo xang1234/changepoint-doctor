@@ -4,7 +4,10 @@
 
 use cpd_core::{CpdError, OfflineChangePointResult, OnlineStepResult, segments_from_breakpoints};
 
+pub mod datasets;
 pub mod synthetic;
+
+pub use datasets::{DatasetKind, DatasetMetadata, list_datasets, load_dataset};
 
 /// Precision/recall/F1 summary for tolerance-based matching.
 #[derive(Clone, Debug, PartialEq)]

@@ -1,0 +1,250 @@
+{
+  "manifest_version": 1,
+  "datasets": [
+    {
+      "name": "synthetic_mean_shift_small",
+      "display_name": "Synthetic Mean Shift Small",
+      "kind": "synthetic",
+      "description": "Univariate piecewise-constant mean shifts with moderate noise.",
+      "length": 240,
+      "dimensions": 1,
+      "synthetic": {
+        "kind": "piecewise_constant_mean",
+        "n": 240,
+        "d": 1,
+        "n_changes": 2,
+        "snr": 3.0,
+        "noise_std": 0.35,
+        "seed": 4401
+      }
+    },
+    {
+      "name": "synthetic_mean_shift_multivariate",
+      "display_name": "Synthetic Mean Shift Multivariate",
+      "kind": "synthetic",
+      "description": "Three-dimensional piecewise-constant mean shifts.",
+      "length": 360,
+      "dimensions": 3,
+      "synthetic": {
+        "kind": "piecewise_constant_mean",
+        "n": 360,
+        "d": 3,
+        "n_changes": 3,
+        "snr": 2.2,
+        "noise_std": 0.5,
+        "seed": 4402
+      }
+    },
+    {
+      "name": "synthetic_variance_regimes",
+      "display_name": "Synthetic Variance Regimes",
+      "kind": "synthetic",
+      "description": "Volatility regime changes with fixed global mean.",
+      "length": 300,
+      "dimensions": 1,
+      "synthetic": {
+        "kind": "piecewise_constant_variance",
+        "n": 300,
+        "d": 1,
+        "n_changes": 3,
+        "mean": 0.0,
+        "base_std": 0.2,
+        "std_step": 0.35,
+        "seed": 4403
+      }
+    },
+    {
+      "name": "synthetic_linear_trend",
+      "display_name": "Synthetic Linear Trend",
+      "kind": "synthetic",
+      "description": "Univariate piecewise-linear trend with slope reversals.",
+      "length": 320,
+      "dimensions": 1,
+      "synthetic": {
+        "kind": "piecewise_linear",
+        "n": 320,
+        "d": 1,
+        "n_changes": 2,
+        "slope_step": 0.06,
+        "noise_std": 0.2,
+        "seed": 4404
+      }
+    },
+    {
+      "name": "synthetic_linear_trend_multivariate",
+      "display_name": "Synthetic Linear Trend Multivariate",
+      "kind": "synthetic",
+      "description": "Two-dimensional piecewise-linear trend benchmark.",
+      "length": 256,
+      "dimensions": 2,
+      "synthetic": {
+        "kind": "piecewise_linear",
+        "n": 256,
+        "d": 2,
+        "n_changes": 3,
+        "slope_step": 0.04,
+        "noise_std": 0.25,
+        "seed": 4405
+      }
+    },
+    {
+      "name": "synthetic_ar1_regime_shift",
+      "display_name": "Synthetic AR1 Regime Shift",
+      "kind": "synthetic",
+      "description": "AR(1) process with joint mean and variance shifts.",
+      "length": 360,
+      "dimensions": 2,
+      "synthetic": {
+        "kind": "ar1_with_changes",
+        "n": 360,
+        "d": 2,
+        "n_changes": 3,
+        "phi": 0.55,
+        "mean_step": 1.2,
+        "base_std": 0.25,
+        "std_step": 0.2,
+        "seed": 4406
+      }
+    },
+    {
+      "name": "synthetic_heavy_tail_shifts",
+      "display_name": "Synthetic Heavy Tail Shifts",
+      "kind": "synthetic",
+      "description": "Student-t innovations with piecewise mean changes.",
+      "length": 280,
+      "dimensions": 1,
+      "synthetic": {
+        "kind": "heavy_tailed",
+        "n": 280,
+        "d": 1,
+        "n_changes": 2,
+        "degrees_of_freedom": 5,
+        "mean_step": 1.0,
+        "scale": 0.75,
+        "seed": 4407
+      }
+    },
+    {
+      "name": "synthetic_count_rate_shifts",
+      "display_name": "Synthetic Count Rate Shifts",
+      "kind": "synthetic",
+      "description": "Poisson count process with piecewise rate changes.",
+      "length": 300,
+      "dimensions": 1,
+      "synthetic": {
+        "kind": "count_data",
+        "n": 300,
+        "d": 1,
+        "n_changes": 3,
+        "base_rate": 2.5,
+        "rate_step": 1.1,
+        "seed": 4408
+      }
+    },
+    {
+      "name": "synthetic_binary_probability_shifts",
+      "display_name": "Synthetic Binary Probability Shifts",
+      "kind": "synthetic",
+      "description": "Bernoulli process with changing success probability.",
+      "length": 300,
+      "dimensions": 1,
+      "synthetic": {
+        "kind": "binary_data",
+        "n": 300,
+        "d": 1,
+        "n_changes": 2,
+        "base_prob": 0.2,
+        "prob_step": 0.25,
+        "seed": 4409
+      }
+    },
+    {
+      "name": "synthetic_multivariate_correlated",
+      "display_name": "Synthetic Multivariate Correlated",
+      "kind": "synthetic",
+      "description": "Correlated multivariate Gaussian-like regimes.",
+      "length": 400,
+      "dimensions": 4,
+      "synthetic": {
+        "kind": "multivariate",
+        "n": 400,
+        "d": 4,
+        "n_changes": 3,
+        "snr": 1.7,
+        "noise_std": 0.4,
+        "correlation": 0.7,
+        "seed": 4410
+      }
+    },
+    {
+      "name": "real_world_public_slice_01",
+      "display_name": "Public Benchmark Slice 01",
+      "kind": "real_world",
+      "description": "Public benchmark-inspired mean-shift slice (vendored for CI).",
+      "length": 30,
+      "dimensions": 1,
+      "license": "CC-BY-compatible synthetic derivative",
+      "source_url": "https://centre-borelli.github.io/ruptures-docs/",
+      "citation": "Truong, C., Oudre, L., Vayatis, N. (2020). Selective review of offline change point detection methods. Signal Processing, 167, 107299.",
+      "real_world": {
+        "fixture_path": "python/tests/fixtures/parity/real_world/public_benchmark_slice_01.json"
+      }
+    },
+    {
+      "name": "real_world_public_slice_02",
+      "display_name": "Public Benchmark Slice 02",
+      "kind": "real_world",
+      "description": "Public benchmark-inspired mean-shift slice (vendored for CI).",
+      "length": 30,
+      "dimensions": 1,
+      "license": "CC-BY-compatible synthetic derivative",
+      "source_url": "https://centre-borelli.github.io/ruptures-docs/",
+      "citation": "Truong, C., Oudre, L., Vayatis, N. (2020). Selective review of offline change point detection methods. Signal Processing, 167, 107299.",
+      "real_world": {
+        "fixture_path": "python/tests/fixtures/parity/real_world/public_benchmark_slice_02.json"
+      }
+    },
+    {
+      "name": "real_world_public_slice_03",
+      "display_name": "Public Benchmark Slice 03",
+      "kind": "real_world",
+      "description": "Public benchmark-inspired trend-break slice (vendored for CI).",
+      "length": 30,
+      "dimensions": 1,
+      "license": "CC-BY-compatible synthetic derivative",
+      "source_url": "https://centre-borelli.github.io/ruptures-docs/",
+      "citation": "Truong, C., Oudre, L., Vayatis, N. (2020). Selective review of offline change point detection methods. Signal Processing, 167, 107299.",
+      "real_world": {
+        "fixture_path": "python/tests/fixtures/parity/real_world/public_benchmark_slice_03.json"
+      }
+    },
+    {
+      "name": "real_world_public_slice_04",
+      "display_name": "Public Benchmark Slice 04",
+      "kind": "real_world",
+      "description": "Public benchmark-inspired trend-break slice (vendored for CI).",
+      "length": 30,
+      "dimensions": 1,
+      "license": "CC-BY-compatible synthetic derivative",
+      "source_url": "https://centre-borelli.github.io/ruptures-docs/",
+      "citation": "Truong, C., Oudre, L., Vayatis, N. (2020). Selective review of offline change point detection methods. Signal Processing, 167, 107299.",
+      "real_world": {
+        "fixture_path": "python/tests/fixtures/parity/real_world/public_benchmark_slice_04.json"
+      }
+    },
+    {
+      "name": "real_world_public_slice_05",
+      "display_name": "Public Benchmark Slice 05",
+      "kind": "real_world",
+      "description": "Public benchmark-inspired heteroskedastic slice (vendored for CI).",
+      "length": 30,
+      "dimensions": 1,
+      "license": "CC-BY-compatible synthetic derivative",
+      "source_url": "https://centre-borelli.github.io/ruptures-docs/",
+      "citation": "Truong, C., Oudre, L., Vayatis, N. (2020). Selective review of offline change point detection methods. Signal Processing, 167, 107299.",
+      "real_world": {
+        "fixture_path": "python/tests/fixtures/parity/real_world/public_benchmark_slice_05.json"
+      }
+    }
+  ]
+}
