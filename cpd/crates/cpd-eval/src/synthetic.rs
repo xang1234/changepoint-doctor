@@ -5,7 +5,9 @@ use std::f64::consts::PI;
 
 const MIN_POSITIVE_U01: f64 = f64::from_bits(1);
 
-/// Synthetic generator return type `(data, true_breakpoints)`.
+/// Synthetic generator return type `(data, true_change_points)`.
+///
+/// `true_change_points` excludes the terminal sample index `n`.
 pub type SyntheticSeries = (Vec<f64>, Vec<usize>);
 
 /// Piecewise-constant mean generator configuration.
@@ -123,12 +125,48 @@ pub struct MissingDataConfig {
 }
 
 /// Returns deterministic, evenly-spaced true change points.
+///
+/// Returned indices exclude the terminal sample index `n`.
 pub fn evenly_spaced_breakpoints(n: usize, n_changes: usize) -> Result<Vec<usize>, CpdError> {
     validate_shape(n, 1, n_changes)?;
-    let mut breakpoints = Vec::with_capacity(n_changes);
+    let mut change_points = Vec::with_capacity(n_changes);
     for i in 1..=n_changes {
-        breakpoints.push(i * n / (n_changes + 1));
+        change_points.push(i * n / (n_changes + 1));
     }
+    Ok(change_points)
+}
+
+/// Converts true change points into `OfflineChangePointResult` breakpoint format.
+///
+/// This appends the terminal index `n` and validates that all change points are
+/// strictly increasing and in `[1, n)`.
+pub fn to_offline_breakpoints(
+    n: usize,
+    true_change_points: &[usize],
+) -> Result<Vec<usize>, CpdError> {
+    if n == 0 {
+        return Err(CpdError::invalid_input(
+            "n must be >= 1 for breakpoint conversion".to_string(),
+        ));
+    }
+    let mut last = 0usize;
+    for (index, &cp) in true_change_points.iter().enumerate() {
+        if cp == 0 || cp >= n {
+            return Err(CpdError::invalid_input(format!(
+                "true_change_points[{index}] must be in [1, {n}); got {cp}"
+            )));
+        }
+        if index > 0 && cp <= last {
+            return Err(CpdError::invalid_input(format!(
+                "true_change_points must be strictly increasing; true_change_points[{}]={last}, true_change_points[{index}]={cp}",
+                index - 1
+            )));
+        }
+        last = cp;
+    }
+    let mut breakpoints = Vec::with_capacity(true_change_points.len() + 1);
+    breakpoints.extend_from_slice(true_change_points);
+    breakpoints.push(n);
     Ok(breakpoints)
 }
 
@@ -138,15 +176,15 @@ pub fn piecewise_constant_mean(cfg: &PiecewiseMeanConfig) -> Result<SyntheticSer
     validate_non_negative(cfg.noise_std, "noise_std")?;
     validate_non_negative(cfg.snr, "snr")?;
 
-    let breakpoints = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
+    let change_points = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
     let mut rng = DeterministicRng::new(cfg.seed);
-    let mut data = vec![0.0; cfg.n * cfg.d];
+    let mut data = vec![0.0; checked_flat_len(cfg.n, cfg.d)?];
     let amplitude = cfg.snr * cfg.noise_std;
 
     fill_piecewise(
         cfg.n,
         cfg.d,
-        breakpoints.as_slice(),
+        change_points.as_slice(),
         |segment, _t, j| {
             let segment_mean = amplitude * segment as f64 + 0.1 * amplitude * j as f64;
             segment_mean + cfg.noise_std * rng.standard_normal()
@@ -154,7 +192,7 @@ pub fn piecewise_constant_mean(cfg: &PiecewiseMeanConfig) -> Result<SyntheticSer
         &mut data,
     );
 
-    Ok((data, breakpoints))
+    Ok((data, change_points))
 }
 
 /// Piecewise-constant variance (volatility) shifts.
@@ -166,14 +204,14 @@ pub fn piecewise_constant_variance(
     validate_non_negative(cfg.std_step, "std_step")?;
     validate_finite(cfg.mean, "mean")?;
 
-    let breakpoints = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
+    let change_points = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
     let mut rng = DeterministicRng::new(cfg.seed);
-    let mut data = vec![0.0; cfg.n * cfg.d];
+    let mut data = vec![0.0; checked_flat_len(cfg.n, cfg.d)?];
 
     fill_piecewise(
         cfg.n,
         cfg.d,
-        breakpoints.as_slice(),
+        change_points.as_slice(),
         |segment, _t, _j| {
             let std = cfg.base_std + cfg.std_step * segment as f64;
             cfg.mean + std * rng.standard_normal()
@@ -181,7 +219,7 @@ pub fn piecewise_constant_variance(
         &mut data,
     );
 
-    Ok((data, breakpoints))
+    Ok((data, change_points))
 }
 
 /// Piecewise-linear trends with breakpointed slope changes.
@@ -190,13 +228,13 @@ pub fn piecewise_linear(cfg: &PiecewiseLinearConfig) -> Result<SyntheticSeries, 
     validate_non_negative(cfg.noise_std, "noise_std")?;
     validate_finite(cfg.slope_step, "slope_step")?;
 
-    let breakpoints = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
+    let change_points = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
     let mut rng = DeterministicRng::new(cfg.seed);
-    let mut data = vec![0.0; cfg.n * cfg.d];
+    let mut data = vec![0.0; checked_flat_len(cfg.n, cfg.d)?];
 
     for dim in 0..cfg.d {
         let mut baseline = 0.0;
-        for (segment, (start, end)) in segments_from_breakpoints(cfg.n, breakpoints.as_slice())
+        for (segment, (start, end)) in segments_from_change_points(cfg.n, change_points.as_slice())
             .into_iter()
             .enumerate()
         {
@@ -213,7 +251,7 @@ pub fn piecewise_linear(cfg: &PiecewiseLinearConfig) -> Result<SyntheticSeries, 
         }
     }
 
-    Ok((data, breakpoints))
+    Ok((data, change_points))
 }
 
 /// AR(1) process with regime shifts in mean and variance.
@@ -230,13 +268,13 @@ pub fn ar1_with_changes(cfg: &Ar1Config) -> Result<SyntheticSeries, CpdError> {
     validate_non_negative(cfg.base_std, "base_std")?;
     validate_non_negative(cfg.std_step, "std_step")?;
 
-    let breakpoints = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
+    let change_points = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
     let mut rng = DeterministicRng::new(cfg.seed);
-    let mut data = vec![0.0; cfg.n * cfg.d];
+    let mut data = vec![0.0; checked_flat_len(cfg.n, cfg.d)?];
 
     for dim in 0..cfg.d {
         let mut prev = 0.0;
-        for (segment, (start, end)) in segments_from_breakpoints(cfg.n, breakpoints.as_slice())
+        for (segment, (start, end)) in segments_from_change_points(cfg.n, change_points.as_slice())
             .into_iter()
             .enumerate()
         {
@@ -251,7 +289,7 @@ pub fn ar1_with_changes(cfg: &Ar1Config) -> Result<SyntheticSeries, CpdError> {
         }
     }
 
-    Ok((data, breakpoints))
+    Ok((data, change_points))
 }
 
 /// Heavy-tailed piecewise series using Student-t innovations.
@@ -265,14 +303,14 @@ pub fn heavy_tailed(cfg: &HeavyTailConfig) -> Result<SyntheticSeries, CpdError> 
     validate_finite(cfg.mean_step, "mean_step")?;
     validate_non_negative(cfg.scale, "scale")?;
 
-    let breakpoints = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
+    let change_points = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
     let mut rng = DeterministicRng::new(cfg.seed);
-    let mut data = vec![0.0; cfg.n * cfg.d];
+    let mut data = vec![0.0; checked_flat_len(cfg.n, cfg.d)?];
 
     fill_piecewise(
         cfg.n,
         cfg.d,
-        breakpoints.as_slice(),
+        change_points.as_slice(),
         |segment, _t, j| {
             let mean = cfg.mean_step * segment as f64 + 0.1 * j as f64;
             mean + cfg.scale * rng.student_t(cfg.degrees_of_freedom)
@@ -280,7 +318,7 @@ pub fn heavy_tailed(cfg: &HeavyTailConfig) -> Result<SyntheticSeries, CpdError> 
         &mut data,
     );
 
-    Ok((data, breakpoints))
+    Ok((data, change_points))
 }
 
 /// Poisson count data with rate changes.
@@ -289,14 +327,14 @@ pub fn count_data(cfg: &CountConfig) -> Result<SyntheticSeries, CpdError> {
     validate_non_negative(cfg.base_rate, "base_rate")?;
     validate_finite(cfg.rate_step, "rate_step")?;
 
-    let breakpoints = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
+    let change_points = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
     let mut rng = DeterministicRng::new(cfg.seed);
-    let mut data = vec![0.0; cfg.n * cfg.d];
+    let mut data = vec![0.0; checked_flat_len(cfg.n, cfg.d)?];
 
     fill_piecewise(
         cfg.n,
         cfg.d,
-        breakpoints.as_slice(),
+        change_points.as_slice(),
         |segment, _t, _j| {
             let lambda = (cfg.base_rate + cfg.rate_step * segment as f64).max(1e-6);
             rng.poisson(lambda) as f64
@@ -304,7 +342,7 @@ pub fn count_data(cfg: &CountConfig) -> Result<SyntheticSeries, CpdError> {
         &mut data,
     );
 
-    Ok((data, breakpoints))
+    Ok((data, change_points))
 }
 
 /// Bernoulli binary data with probability changes.
@@ -313,14 +351,14 @@ pub fn binary_data(cfg: &BinaryConfig) -> Result<SyntheticSeries, CpdError> {
     validate_finite(cfg.base_prob, "base_prob")?;
     validate_finite(cfg.prob_step, "prob_step")?;
 
-    let breakpoints = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
+    let change_points = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
     let mut rng = DeterministicRng::new(cfg.seed);
-    let mut data = vec![0.0; cfg.n * cfg.d];
+    let mut data = vec![0.0; checked_flat_len(cfg.n, cfg.d)?];
 
     fill_piecewise(
         cfg.n,
         cfg.d,
-        breakpoints.as_slice(),
+        change_points.as_slice(),
         |segment, _t, _j| {
             let prob = (cfg.base_prob + cfg.prob_step * segment as f64).clamp(0.0, 1.0);
             if rng.bernoulli(prob) { 1.0 } else { 0.0 }
@@ -328,7 +366,7 @@ pub fn binary_data(cfg: &BinaryConfig) -> Result<SyntheticSeries, CpdError> {
         &mut data,
     );
 
-    Ok((data, breakpoints))
+    Ok((data, change_points))
 }
 
 /// Multivariate generator with optional cross-dimensional correlation.
@@ -345,31 +383,41 @@ pub fn multivariate(cfg: &MultivariateConfig) -> Result<SyntheticSeries, CpdErro
         )));
     }
 
-    let breakpoints = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
+    let change_points = evenly_spaced_breakpoints(cfg.n, cfg.n_changes)?;
     let mut rng = DeterministicRng::new(cfg.seed);
-    let mut data = vec![0.0; cfg.n * cfg.d];
-    let amplitude = cfg.snr * cfg.noise_std;
+    let mut data = vec![0.0; checked_flat_len(cfg.n, cfg.d)?];
+    let n_segments = cfg.n_changes + 1;
     let rho_common = rho.sqrt();
     let rho_ind = (1.0 - rho).sqrt();
+    let segment_scales = (0..n_segments)
+        .map(|segment| 1.0 + cfg.snr * segment as f64)
+        .collect::<Vec<_>>();
+    let dim_biases = (0..cfg.d)
+        .map(|j| (j as f64 - (cfg.d.saturating_sub(1)) as f64 / 2.0) * 0.05 * cfg.noise_std)
+        .collect::<Vec<_>>();
 
     let mut segment = 0usize;
     let mut bp_idx = 0usize;
     for t in 0..cfg.n {
-        while bp_idx < breakpoints.len() && t >= breakpoints[bp_idx] {
+        while bp_idx < change_points.len() && t >= change_points[bp_idx] {
             segment += 1;
             bp_idx += 1;
         }
 
         let common = rng.standard_normal();
+        let segment_scale = segment_scales[segment];
         for j in 0..cfg.d {
-            let mean = amplitude * segment as f64 + 0.25 * amplitude * j as f64;
             let idiosyncratic = rng.standard_normal();
-            let noise = cfg.noise_std * (rho_common * common + rho_ind * idiosyncratic);
-            data[t * cfg.d + j] = mean + noise;
+            let noise = if rho == 0.0 {
+                cfg.noise_std * idiosyncratic
+            } else {
+                cfg.noise_std * (rho_common * common + rho_ind * idiosyncratic)
+            };
+            data[t * cfg.d + j] = dim_biases[j] + segment_scale * noise;
         }
     }
 
-    Ok((data, breakpoints))
+    Ok((data, change_points))
 }
 
 /// Piecewise signal with injected NaN gaps under configurable missing patterns.
@@ -393,11 +441,11 @@ pub fn missing_data(cfg: &MissingDataConfig) -> Result<SyntheticSeries, CpdError
         noise_std: cfg.noise_std,
         seed: cfg.seed,
     };
-    let (mut data, breakpoints) = piecewise_constant_mean(&mean_cfg)?;
-    let total = cfg.n * cfg.d;
+    let (mut data, change_points) = piecewise_constant_mean(&mean_cfg)?;
+    let total = checked_flat_len(cfg.n, cfg.d)?;
     let target_missing = ((total as f64) * cfg.missing_fraction).round() as usize;
     if target_missing == 0 {
-        return Ok((data, breakpoints));
+        return Ok((data, change_points));
     }
 
     let mut rng = DeterministicRng::new(cfg.seed ^ 0x9e37_79b9_7f4a_7c15);
@@ -436,7 +484,7 @@ pub fn missing_data(cfg: &MissingDataConfig) -> Result<SyntheticSeries, CpdError
         }
     }
 
-    Ok((data, breakpoints))
+    Ok((data, change_points))
 }
 
 fn validate_shape(n: usize, d: usize, n_changes: usize) -> Result<(), CpdError> {
@@ -473,6 +521,14 @@ fn validate_finite(value: f64, label: &str) -> Result<(), CpdError> {
     Ok(())
 }
 
+fn checked_flat_len(n: usize, d: usize) -> Result<usize, CpdError> {
+    n.checked_mul(d).ok_or_else(|| {
+        CpdError::invalid_input(format!(
+            "n*d overflows usize; got n={n}, d={d}. Use smaller dimensions."
+        ))
+    })
+}
+
 fn fill_piecewise<F>(n: usize, d: usize, breakpoints: &[usize], mut value_fn: F, data: &mut [f64])
 where
     F: FnMut(usize, usize, usize) -> f64,
@@ -490,10 +546,10 @@ where
     }
 }
 
-fn segments_from_breakpoints(n: usize, breakpoints: &[usize]) -> Vec<(usize, usize)> {
-    let mut segments = Vec::with_capacity(breakpoints.len() + 1);
+fn segments_from_change_points(n: usize, change_points: &[usize]) -> Vec<(usize, usize)> {
+    let mut segments = Vec::with_capacity(change_points.len() + 1);
     let mut start = 0usize;
-    for &bp in breakpoints {
+    for &bp in change_points {
         segments.push((start, bp));
         start = bp;
     }
@@ -521,8 +577,7 @@ fn fill_block_missing(
     target_missing: usize,
     rng: &mut DeterministicRng,
 ) {
-    let total = n * d;
-    let target = target_missing.min(total);
+    let target = target_missing.min(data.len());
     let mut placed = count_missing(data);
     let gap = gap_length.min(n);
     let mut attempts = 0usize;
@@ -563,8 +618,7 @@ fn fill_periodic_missing(
     target_missing: usize,
     rng: &mut DeterministicRng,
 ) {
-    let total = n * d;
-    let target = target_missing.min(total);
+    let target = target_missing.min(data.len());
     let mut placed = count_missing(data);
 
     for t0 in (0..n).step_by(every) {
@@ -700,7 +754,7 @@ mod tests {
         MultivariateConfig, PiecewiseLinearConfig, PiecewiseMeanConfig, PiecewiseVarianceConfig,
         ar1_with_changes, binary_data, count_data, count_missing, evenly_spaced_breakpoints,
         heavy_tailed, missing_data, multivariate, piecewise_constant_mean,
-        piecewise_constant_variance, piecewise_linear,
+        piecewise_constant_variance, piecewise_linear, to_offline_breakpoints,
     };
 
     fn segment_means(data: &[f64], n: usize, d: usize, breakpoints: &[usize]) -> Vec<f64> {
@@ -972,6 +1026,34 @@ mod tests {
     }
 
     #[test]
+    fn multivariate_generator_supports_independent_dimensions() {
+        let cfg = MultivariateConfig {
+            n: 8000,
+            d: 3,
+            n_changes: 24,
+            snr: 2.0,
+            noise_std: 1.0,
+            correlation: None,
+            seed: 97,
+        };
+
+        let (data, breakpoints) = multivariate(&cfg).expect("generation should succeed");
+        assert_eq!(breakpoints.len(), cfg.n_changes);
+
+        let mut first_dim = Vec::with_capacity(cfg.n);
+        let mut second_dim = Vec::with_capacity(cfg.n);
+        for t in 0..cfg.n {
+            first_dim.push(data[t * cfg.d]);
+            second_dim.push(data[t * cfg.d + 1]);
+        }
+        let rho = correlation(first_dim.as_slice(), second_dim.as_slice());
+        assert!(
+            rho.abs() < 0.15,
+            "expected near-independent dims; rho={rho}"
+        );
+    }
+
+    #[test]
     fn missing_generator_is_seeded_and_inserts_expected_nan_count() {
         let cfg = MissingDataConfig {
             n: 1000,
@@ -1048,5 +1130,36 @@ mod tests {
         for start in (0..cfg.n).step_by(10) {
             assert!(data[start].is_nan());
         }
+    }
+
+    #[test]
+    fn to_offline_breakpoints_appends_terminal_index() {
+        let breakpoints =
+            to_offline_breakpoints(120, &[40, 80]).expect("conversion should succeed");
+        assert_eq!(breakpoints, vec![40, 80, 120]);
+    }
+
+    #[test]
+    fn to_offline_breakpoints_rejects_invalid_change_points() {
+        let err = to_offline_breakpoints(10, &[0, 4]).expect_err("0 should be rejected");
+        assert!(err.to_string().contains("must be in [1, 10)"));
+
+        let err = to_offline_breakpoints(10, &[4, 4]).expect_err("non-strict order should fail");
+        assert!(err.to_string().contains("strictly increasing"));
+    }
+
+    #[test]
+    fn generators_reject_flatten_length_overflow() {
+        let cfg = PiecewiseMeanConfig {
+            n: usize::MAX,
+            d: 2,
+            n_changes: 1,
+            snr: 1.0,
+            noise_std: 1.0,
+            seed: 0,
+        };
+
+        let err = piecewise_constant_mean(&cfg).expect_err("overflow should be rejected");
+        assert!(err.to_string().contains("n*d overflows usize"));
     }
 }
