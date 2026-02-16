@@ -611,6 +611,26 @@ pub fn validate_top_k(
             x.missing,
         )?;
     }
+    let imputed_values = if validation_view.has_missing() {
+        Some(impute_missing_to_c_f64(&validation_view)?)
+    } else {
+        None
+    };
+    if let Some(imputed) = imputed_values.as_ref() {
+        validation_view = TimeSeriesView::from_f64(
+            imputed.as_slice(),
+            validation_view.n,
+            validation_view.d,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::None,
+            MissingPolicy::Error,
+        )?;
+        notes.push(
+            "validation input contained missing values; applied deterministic forward-fill imputation (leading missings -> 0.0) before running offline pipelines"
+                .to_string(),
+        );
+    }
 
     let mut pipeline_results = Vec::<(PipelineConfig, OfflineChangePointResult)>::new();
     for (rank, recommendation) in recommendations.iter().take(selected_len).enumerate() {
@@ -642,6 +662,13 @@ pub fn validate_top_k(
         return Err(CpdError::invalid_input(
             "validate_top_k could not execute any offline pipelines from the selected recommendations",
         ));
+    }
+    if selected_len > 1 && pipeline_results.len() < 2 {
+        return Err(CpdError::invalid_input(format!(
+            "validate_top_k requires at least two successfully validated offline pipelines when k>1; got {} successful pipeline(s) from {} selected recommendation(s)",
+            pipeline_results.len(),
+            selected_len
+        )));
     }
 
     let offline_results = pipeline_results
@@ -742,6 +769,48 @@ fn build_validation_downsampled_input(
     })
 }
 
+fn impute_missing_to_c_f64(x: &TimeSeriesView<'_>) -> Result<Vec<f64>, CpdError> {
+    let total_len =
+        x.n.checked_mul(x.d)
+            .ok_or_else(|| CpdError::resource_limit("imputed value length overflow"))?;
+    let source_len = match x.values {
+        DTypeView::F32(values) => values.len(),
+        DTypeView::F64(values) => values.len(),
+    };
+
+    let mut out = Vec::with_capacity(total_len);
+    let mut last_seen = vec![0.0_f64; x.d];
+    let mut seen = vec![false; x.d];
+
+    for t in 0..x.n {
+        for dim in 0..x.d {
+            let idx = source_index(x.layout, x.n, x.d, t, dim)?;
+            if idx >= source_len {
+                return Err(CpdError::invalid_input(format!(
+                    "imputation source index out of bounds at t={t}, dim={dim}: idx={idx}, len={source_len}"
+                )));
+            }
+
+            let raw = match x.values {
+                DTypeView::F32(values) => f64::from(values[idx]),
+                DTypeView::F64(values) => values[idx],
+            };
+            let mask_missing = x.missing_mask.map(|mask| mask[idx] == 1).unwrap_or(false);
+            let is_missing = mask_missing || raw.is_nan();
+            if is_missing {
+                let fill = if seen[dim] { last_seen[dim] } else { 0.0 };
+                out.push(fill);
+            } else {
+                out.push(raw);
+                last_seen[dim] = raw;
+                seen[dim] = true;
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 fn remap_validation_result(
     mut result: OfflineChangePointResult,
     sampled_row_indices: Option<&[usize]>,
@@ -789,10 +858,21 @@ fn remap_breakpoints_to_original(
                 sampled_row_indices.len()
             )));
         }
-        let source_row = sampled_row_indices[breakpoint - 1];
-        let mapped_breakpoint = source_row
-            .checked_add(1)
-            .ok_or_else(|| CpdError::resource_limit("remapped breakpoint overflow"))?;
+        let mapped_breakpoint = if breakpoint == sampled_row_indices.len() {
+            original_n
+        } else {
+            let left_row = sampled_row_indices[breakpoint - 1];
+            let right_row = sampled_row_indices[breakpoint];
+            if right_row <= left_row {
+                return Err(CpdError::invalid_input(format!(
+                    "sampled_row_indices must be strictly increasing for remapping; got left_row={left_row}, right_row={right_row}, breakpoint_idx={idx}"
+                )));
+            }
+            let gap = right_row - left_row;
+            left_row
+                .checked_add(gap.div_ceil(2))
+                .ok_or_else(|| CpdError::resource_limit("remapped breakpoint overflow"))?
+        };
         if mapped_breakpoint > original_n {
             return Err(CpdError::invalid_input(format!(
                 "remapped breakpoint[{idx}]={mapped_breakpoint} exceeds original n={original_n}"
@@ -1130,6 +1210,8 @@ fn compute_penalty_sensitivity(
     notes: &mut Vec<String>,
 ) -> Result<Option<f64>, CpdError> {
     let mut sensitivities = Vec::<f64>::new();
+    let mut penalty_based_pipeline_count = 0usize;
+    let mut penalty_run_failure_count = 0usize;
 
     for (pipeline, base_result) in pipeline_results {
         let Some(scaled_low) = pipeline_with_scaled_penalty(
@@ -1142,6 +1224,7 @@ fn compute_penalty_sensitivity(
         else {
             continue;
         };
+        penalty_based_pipeline_count = penalty_based_pipeline_count.saturating_add(1);
         let Some(scaled_high) = pipeline_with_scaled_penalty(
             pipeline,
             PENALTY_SCALE_UP,
@@ -1156,6 +1239,7 @@ fn compute_penalty_sensitivity(
         let low_result = match run_offline_pipeline(validation_view, &scaled_low) {
             Ok(result) => remap_validation_result(result, sampled_row_indices, original_n)?,
             Err(err) => {
+                penalty_run_failure_count = penalty_run_failure_count.saturating_add(1);
                 notes.push(format!(
                     "penalty sensitivity skipped for pipeline={} because 0.9x run failed: {err}",
                     pipeline_id(pipeline)
@@ -1167,6 +1251,7 @@ fn compute_penalty_sensitivity(
         let high_result = match run_offline_pipeline(validation_view, &scaled_high) {
             Ok(result) => remap_validation_result(result, sampled_row_indices, original_n)?,
             Err(err) => {
+                penalty_run_failure_count = penalty_run_failure_count.saturating_add(1);
                 notes.push(format!(
                     "penalty sensitivity skipped for pipeline={} because 1.1x run failed: {err}",
                     pipeline_id(pipeline)
@@ -1189,10 +1274,16 @@ fn compute_penalty_sensitivity(
     }
 
     if sensitivities.is_empty() {
-        notes.push(
-            "penalty_sensitivity unavailable because no validated pipelines used penalty-based stopping"
-                .to_string(),
-        );
+        if penalty_based_pipeline_count == 0 {
+            notes.push(
+                "penalty_sensitivity unavailable because no validated pipelines used penalty-based stopping"
+                    .to_string(),
+            );
+        } else {
+            notes.push(format!(
+                "penalty_sensitivity unavailable because all ±10% penalty reruns failed for {penalty_based_pipeline_count} penalty-based pipeline(s) (failures={penalty_run_failure_count})"
+            ));
+        }
         Ok(None)
     } else {
         Ok(Some(mean_f64(sensitivities.as_slice())))
@@ -2834,7 +2925,7 @@ mod tests {
     use cpd_core::{
         Constraints, MemoryLayout, MissingPolicy, Penalty, Stopping, TimeIndex, TimeSeriesView,
     };
-    use cpd_online::ObservationModel;
+    use cpd_online::{CusumConfig, ObservationModel};
     use std::collections::BTreeSet;
 
     fn make_univariate_view(values: &[f64]) -> TimeSeriesView<'_> {
@@ -3486,6 +3577,95 @@ mod tests {
             Some(values.len())
         );
         assert!(report.notes.iter().any(|note| note.contains("downsampled")));
+    }
+
+    #[test]
+    fn downsample_breakpoint_remap_uses_midpoint_between_sampled_rows() {
+        let mapped =
+            super::remap_breakpoints_to_original(&[2, 5], &[0, 4, 8, 12, 15], 16).expect("remap");
+        assert_eq!(mapped, vec![6, 16]);
+    }
+
+    #[test]
+    fn validate_top_k_imputes_missing_values_for_offline_validation() {
+        let values = vec![
+            f64::NAN,
+            f64::NAN,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            5.0,
+            5.0,
+            f64::NAN,
+            5.0,
+            5.0,
+            5.0,
+        ];
+        let view = TimeSeriesView::from_f64(
+            &values,
+            values.len(),
+            1,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::None,
+            MissingPolicy::Ignore,
+        )
+        .expect("view with missing should be valid");
+
+        let recommendation = make_recommendation(PipelineConfig::Offline {
+            detector: OfflineDetectorConfig::Pelt(super::PeltConfig {
+                stopping: Stopping::KnownK(1),
+                params_per_segment: 2,
+                cancel_check_every: 16,
+            }),
+            cost: OfflineCostKind::L2,
+            constraints: Constraints {
+                min_segment_len: 2,
+                ..Constraints::default()
+            },
+        });
+
+        let report =
+            validate_top_k(&view, &[recommendation], 1, None, Some(123)).expect("validation");
+        assert_eq!(report.pipeline_results.len(), 1);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("forward-fill imputation"))
+        );
+    }
+
+    #[test]
+    fn validate_top_k_requires_two_successful_offline_runs_when_k_greater_than_one() {
+        let values = vec![0.0; 64];
+        let view = make_univariate_view(&values);
+
+        let recommendations = vec![
+            make_recommendation(PipelineConfig::Offline {
+                detector: OfflineDetectorConfig::Pelt(super::PeltConfig {
+                    stopping: Stopping::Penalized(Penalty::Manual(10.0)),
+                    params_per_segment: 2,
+                    cancel_check_every: 16,
+                }),
+                cost: OfflineCostKind::L2,
+                constraints: Constraints {
+                    min_segment_len: 2,
+                    ..Constraints::default()
+                },
+            }),
+            make_recommendation(PipelineConfig::Online {
+                detector: OnlineDetectorConfig::Cusum(CusumConfig::default()),
+            }),
+        ];
+
+        let err = validate_top_k(&view, &recommendations, 2, None, None)
+            .expect_err("single successful offline validation should fail for k>1");
+        assert!(
+            err.to_string()
+                .contains("at least two successfully validated offline pipelines")
+        );
     }
 
     #[test]
