@@ -11,7 +11,7 @@ use cpd_core::{
     TimeSeriesView, penalty_value, validate_breakpoints, validate_constraints,
     validate_constraints_config,
 };
-use cpd_costs::{CostL2Mean, CostModel, CostNIGMarginal, CostNormalMeanVar};
+use cpd_costs::{CostAR, CostL2Mean, CostModel, CostNIGMarginal, CostNormalMeanVar};
 use cpd_offline::{BinSeg, BinSegConfig, Pelt, PeltConfig, Wbs, WbsConfig, WbsIntervalStrategy};
 use cpd_online::{
     BernoulliBetaPrior, BocpdConfig, CusumConfig, GaussianNigPrior, ObservationModel,
@@ -282,6 +282,7 @@ impl PipelineSpec {
         match &self.detector {
             DetectorConfig::Offline(detector) => {
                 let cost = match self.cost {
+                    CostConfig::Ar => OfflineCostKind::Ar,
                     CostConfig::L2 => OfflineCostKind::L2,
                     CostConfig::Normal => OfflineCostKind::Normal,
                     CostConfig::Nig => OfflineCostKind::Nig,
@@ -465,6 +466,7 @@ pub enum OnlineDetectorKind {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CostConfig {
+    Ar,
     L2,
     Normal,
     Nig,
@@ -474,6 +476,7 @@ pub enum CostConfig {
 impl From<OfflineCostKind> for CostConfig {
     fn from(value: OfflineCostKind) -> Self {
         match value {
+            OfflineCostKind::Ar => Self::Ar,
             OfflineCostKind::L2 => Self::L2,
             OfflineCostKind::Normal => Self::Normal,
             OfflineCostKind::Nig => Self::Nig,
@@ -504,6 +507,7 @@ pub enum OfflineDetectorConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OfflineCostKind {
+    Ar,
     L2,
     Normal,
     Nig,
@@ -1205,6 +1209,9 @@ fn run_offline_pipeline_with_config(
     let ctx = ExecutionContext::new(constraints).with_repro_mode(repro_mode);
 
     match cost {
+        OfflineCostKind::Ar => {
+            run_offline_detector_with_cost(detect_view, detector, &ctx, CostAR::new(1, repro_mode))
+        }
         OfflineCostKind::L2 => {
             run_offline_detector_with_cost(detect_view, detector, &ctx, CostL2Mean::new(repro_mode))
         }
@@ -2462,30 +2469,26 @@ fn build_offline_candidates(
             let candidate = Candidate {
                 pipeline: PipelineConfig::Offline {
                     detector: OfflineDetectorConfig::Pelt(PeltConfig::default()),
-                    cost: OfflineCostKind::Normal,
+                    cost: OfflineCostKind::Ar,
                     constraints,
                 },
                 pipeline_id: format!(
-                    "offline:pelt:normal:jump={}",
+                    "offline:pelt:ar:jump={}",
                     apply_jump_thinning(base_constraints, x.n, true).jump
                 ),
-                warnings: vec![
-                    "mapped autocorrelation intent (CostAR/CostLinear) to available Normal cost"
-                        .to_string(),
-                ],
-                primary_reason:
-                    "large-n offline series with autocorrelation favors robust PELT+Normal"
-                        .to_string(),
+                warnings: vec![],
+                primary_reason: "large-n offline series with autocorrelation favors PELT+AR"
+                    .to_string(),
                 driver_keys: vec!["lag1_autocorr", "lagk_autocorr", "residual_lag1_autocorr"],
                 profile: PerformanceProfile {
-                    speed: 0.80,
-                    accuracy: 0.78,
-                    robustness: 0.62,
+                    speed: 0.78,
+                    accuracy: 0.82,
+                    robustness: 0.70,
                 },
                 family: CandidateFamily::StrongMapped,
                 supported_signals: vec![SignalKind::Autocorrelated],
-                evidence_support: evidence_support(0.78, flags, true),
-                has_approximation_warning: true,
+                evidence_support: evidence_support(0.82, flags, false),
+                has_approximation_warning: false,
             };
             push_candidate(candidate, out, seen);
         }
@@ -2974,12 +2977,15 @@ fn top_driver_summary(summary: &DiagnosticsSummary) -> String {
 fn pipeline_label(pipeline: &PipelineConfig) -> &'static str {
     match pipeline {
         PipelineConfig::Offline { detector, cost, .. } => match (detector, cost) {
+            (OfflineDetectorConfig::Pelt(_), OfflineCostKind::Ar) => "PELT + AR",
             (OfflineDetectorConfig::Pelt(_), OfflineCostKind::L2) => "PELT + L2",
             (OfflineDetectorConfig::Pelt(_), OfflineCostKind::Normal) => "PELT + Normal",
             (OfflineDetectorConfig::Pelt(_), OfflineCostKind::Nig) => "PELT + NIG",
+            (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Ar) => "BinSeg + AR",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Normal) => "BinSeg + Normal",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::L2) => "BinSeg + L2",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Nig) => "BinSeg + NIG",
+            (OfflineDetectorConfig::Wbs(_), OfflineCostKind::Ar) => "WBS + AR",
             (OfflineDetectorConfig::Wbs(_), OfflineCostKind::L2) => "WBS + L2",
             (OfflineDetectorConfig::Wbs(_), OfflineCostKind::Normal) => "WBS + Normal",
             (OfflineDetectorConfig::Wbs(_), OfflineCostKind::Nig) => "WBS + NIG",
@@ -3180,6 +3186,7 @@ fn pipeline_id(pipeline: &PipelineConfig) -> String {
                 OfflineDetectorConfig::Wbs(_) => "wbs",
             };
             let cost_name = match cost {
+                OfflineCostKind::Ar => "ar",
                 OfflineCostKind::L2 => "l2",
                 OfflineCostKind::Normal => "normal",
                 OfflineCostKind::Nig => "nig",
@@ -3303,6 +3310,7 @@ mod tests {
                     OfflineDetectorConfig::Wbs(_) => "wbs",
                 });
                 costs.insert(match cost {
+                    OfflineCostKind::Ar => "ar",
                     OfflineCostKind::L2 => "l2",
                     OfflineCostKind::Normal => "normal",
                     OfflineCostKind::Nig => "nig",
@@ -3394,7 +3402,7 @@ mod tests {
     }
 
     #[test]
-    fn recommend_offline_autocorrelated_emits_normal_with_ar_mapping_warning() {
+    fn recommend_offline_autocorrelated_prefers_ar_cost() {
         let n = 120_000;
         let values = (0..n)
             .map(|t| (2.0 * std::f64::consts::PI * t as f64 / 200.0).sin())
@@ -3412,14 +3420,14 @@ mod tests {
         match &pipeline {
             PipelineConfig::Offline {
                 detector: OfflineDetectorConfig::Pelt(_),
-                cost: OfflineCostKind::Normal,
+                cost: OfflineCostKind::Ar,
                 ..
             } => {
                 assert!(
                     recommendations[0]
                         .warnings
                         .iter()
-                        .any(|warning| warning.contains("CostAR/CostLinear"))
+                        .all(|warning| !warning.contains("CostAR/CostLinear"))
                 );
             }
             other => panic!("unexpected top recommendation: {other:?}"),

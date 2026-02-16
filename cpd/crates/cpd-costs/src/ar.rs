@@ -263,6 +263,18 @@ impl CostModel for CostAR {
         x: &TimeSeriesView<'_>,
         policy: &CachePolicy,
     ) -> Result<Self::Cache, CpdError> {
+        if self.order == 0 {
+            return Err(CpdError::invalid_input(
+                "CostAR requires order >= 1; got order=0",
+            ));
+        }
+        if self.order != 1 {
+            return Err(CpdError::not_supported(format!(
+                "CostAR currently supports order=1 only; got order={}",
+                self.order
+            )));
+        }
+
         let required_bytes = self.worst_case_cache_bytes(x);
 
         if matches!(policy, CachePolicy::Approximate { .. }) {
@@ -378,7 +390,11 @@ impl CostModel for CostAR {
         if segment_len <= self.order.saturating_add(1) {
             return 0.0;
         }
-        debug_assert_eq!(self.order, 1);
+        assert_eq!(
+            self.order, 1,
+            "CostAR currently supports order=1 only; got order={}",
+            self.order
+        );
 
         let n_residuals = (segment_len - self.order) as f64;
         let mut total = 0.0;
@@ -652,6 +668,12 @@ mod tests {
             .expect_err("order=2 should fail");
         assert!(matches!(ar2, CpdError::NotSupported(_)));
         assert!(ar2.to_string().contains("order=1 only"));
+
+        let ar2_precompute = CostAR::new(2, ReproMode::Balanced)
+            .precompute(&clean, &CachePolicy::Full)
+            .expect_err("precompute should also reject unsupported orders");
+        assert!(matches!(ar2_precompute, CpdError::NotSupported(_)));
+        assert!(ar2_precompute.to_string().contains("order=1 only"));
 
         let with_missing = [1.0, f64::NAN, 3.0, 4.0];
         let missing_view = make_f64_view(
