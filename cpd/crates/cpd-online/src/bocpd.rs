@@ -391,6 +391,11 @@ impl BocpdState {
         self.alert_gate.policy
     }
 
+    #[cfg(feature = "serde")]
+    pub(crate) fn install_legacy_alert_policy(&mut self, policy: AlertPolicy) {
+        self.alert_gate = AlertGateState::new(policy);
+    }
+
     pub(crate) fn validate(&self) -> Result<(), CpdError> {
         if self.log_run_probs.is_empty() {
             return Err(CpdError::invalid_input(

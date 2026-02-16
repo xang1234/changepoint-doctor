@@ -448,6 +448,33 @@ pub fn load_state_from_checkpoint_file<State: DeserializeOwned>(
     load_state_from_checkpoint_envelope(&envelope, expected_detector_id)
 }
 
+fn payload_json_contains_field(
+    envelope: &CheckpointEnvelope,
+    field: &str,
+) -> Result<bool, CpdError> {
+    if envelope.payload_codec != PayloadCodec::Json {
+        return Ok(true);
+    }
+
+    let payload: serde_json::Value = serde_json::from_slice(&envelope.payload).map_err(|err| {
+        CpdError::invalid_input(format!(
+            "checkpoint payload deserialization failed (codec=json): {err}"
+        ))
+    })?;
+
+    let object = payload.as_object().ok_or_else(|| {
+        CpdError::invalid_input(
+            "checkpoint payload deserialization failed (codec=json): expected object",
+        )
+    })?;
+
+    Ok(object.contains_key(field))
+}
+
+fn bocpd_payload_missing_alert_gate(envelope: &CheckpointEnvelope) -> Result<bool, CpdError> {
+    Ok(!payload_json_contains_field(envelope, "alert_gate")?)
+}
+
 /// Saves BOCPD detector state into a checkpoint envelope.
 pub fn save_bocpd_checkpoint(
     detector: &BocpdDetector,
@@ -483,7 +510,11 @@ pub fn load_bocpd_checkpoint(
     detector: &mut BocpdDetector,
     envelope: &CheckpointEnvelope,
 ) -> Result<(), CpdError> {
-    let state: BocpdState = load_state_from_checkpoint_envelope(envelope, BOCPD_DETECTOR_ID)?;
+    let alert_gate_missing = bocpd_payload_missing_alert_gate(envelope)?;
+    let mut state: BocpdState = load_state_from_checkpoint_envelope(envelope, BOCPD_DETECTOR_ID)?;
+    if alert_gate_missing {
+        state.install_legacy_alert_policy(detector.config().alert_policy);
+    }
     state.validate()?;
     detector.load_state(&state);
     Ok(())
@@ -494,10 +525,11 @@ pub fn load_bocpd_checkpoint_file(
     detector: &mut BocpdDetector,
     path: impl AsRef<Path>,
 ) -> Result<(), CpdError> {
-    let state: BocpdState = load_state_from_checkpoint_file(path, BOCPD_DETECTOR_ID)?;
-    state.validate()?;
-    detector.load_state(&state);
-    Ok(())
+    let path = path.as_ref();
+    let encoded = std::fs::read(path)
+        .map_err(|err| io_resource_error("failed reading checkpoint file", path, err))?;
+    let envelope = decode_checkpoint_envelope(&encoded)?;
+    load_bocpd_checkpoint(detector, &envelope)
 }
 
 /// Saves CUSUM detector state into a checkpoint envelope.
@@ -713,6 +745,44 @@ mod tests {
     }
 
     #[test]
+    fn legacy_bocpd_payload_without_alert_gate_preserves_configured_policy() {
+        let custom_policy = crate::AlertPolicy::compatibility(0.83);
+        let mut detector = BocpdDetector::new(BocpdConfig {
+            alert_policy: custom_policy,
+            ..BocpdConfig::default()
+        })
+        .expect("valid BOCPD config");
+        detector
+            .update(&[1.0], None, &ctx())
+            .expect("update should succeed");
+
+        let mut envelope = save_bocpd_checkpoint(&detector, PayloadCodec::Json)
+            .expect("checkpoint save should succeed");
+        let mut payload: serde_json::Value =
+            serde_json::from_slice(&envelope.payload).expect("payload should decode as json");
+        let payload_obj = payload
+            .as_object_mut()
+            .expect("serialized BOCPD state payload should be a JSON object");
+        assert!(
+            payload_obj.remove("alert_gate").is_some(),
+            "serialized payload should include alert_gate before stripping"
+        );
+        envelope.payload = serde_json::to_vec(&payload).expect("payload should re-encode");
+        envelope.payload_crc32 = crc32fast::hash(&envelope.payload);
+
+        let mut restored = BocpdDetector::new(BocpdConfig {
+            alert_policy: custom_policy,
+            ..BocpdConfig::default()
+        })
+        .expect("valid BOCPD config");
+        load_bocpd_checkpoint(&mut restored, &envelope)
+            .expect("legacy payload without alert_gate should still restore");
+
+        assert_eq!(restored.config().alert_policy, custom_policy);
+        assert_eq!(restored.state().alert_policy(), custom_policy);
+    }
+
+    #[test]
     fn legacy_v0_crc_accepts_raw_json_payload_ordering_and_spacing() {
         let payload_raw =
             "{ \"watermark_ns\": null, \"steps_since_alert\": 3, \"score\": 0.2, \"t\": 3 }";
@@ -912,39 +982,29 @@ mod tests {
 
     #[test]
     fn atomic_save_writes_final_file_without_leaking_temp_files() {
-        let path = unique_temp_checkpoint_path("cpd-online-atomic-save");
-        remove_file_if_exists(&path);
-        let parent = path
-            .parent()
-            .expect("temp checkpoint path must have a parent")
-            .to_path_buf();
-        let file_name = path
-            .file_name()
-            .expect("temp checkpoint path must have a file name")
-            .to_string_lossy()
-            .to_string();
-        let temp_prefix = format!("{file_name}.tmp-");
+        let temp_dir = tempfile::tempdir().expect("tempdir creation should succeed");
+        let file_name = "atomic-save-checkpoint.json";
+        let path = temp_dir.path().join(file_name);
 
         let detector = make_cusum();
         save_cusum_checkpoint_file(&detector, &path, PayloadCodec::Json)
             .expect("atomic checkpoint save should succeed");
 
         assert!(path.exists(), "final checkpoint path should exist");
-        let dir_entries = std::fs::read_dir(&parent).expect("should read temp dir entries");
-        for entry in dir_entries {
-            let entry = entry.expect("directory entry should load");
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            assert!(
-                !name.starts_with(&temp_prefix),
-                "stale temp checkpoint file detected: {name}"
-            );
-        }
+        let mut names = std::fs::read_dir(temp_dir.path())
+            .expect("should read temp dir entries")
+            .map(|entry| entry.expect("directory entry should load").file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![std::ffi::OsString::from(file_name)],
+            "atomic save should not leave stale temp files in isolated directory"
+        );
 
         let mut restored = make_cusum();
         load_cusum_checkpoint_file(&mut restored, &path).expect("load after atomic save succeeds");
         assert_eq!(restored.save_state(), detector.save_state());
-        remove_file_if_exists(&path);
     }
 
     #[test]
