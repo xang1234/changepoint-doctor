@@ -4,8 +4,9 @@
 
 use cpd_core::{
     DIAGNOSTICS_SCHEMA_VERSION, Diagnostics as CoreDiagnostics,
-    OfflineChangePointResult as CoreOfflineChangePointResult, PruningStats as CorePruningStats,
-    ReproMode, SegmentStats as CoreSegmentStats,
+    OfflineChangePointResult as CoreOfflineChangePointResult,
+    OnlineStepResult as CoreOnlineStepResult, PruningStats as CorePruningStats, ReproMode,
+    SegmentStats as CoreSegmentStats,
 };
 #[cfg(not(feature = "serde"))]
 use pyo3::exceptions::PyNotImplementedError;
@@ -380,6 +381,77 @@ impl PyDiagnostics {
     }
 }
 
+#[pyclass(module = "cpd._cpd_rs", name = "OnlineStepResult", frozen)]
+#[derive(Clone, Debug)]
+pub struct PyOnlineStepResult {
+    t: usize,
+    p_change: f64,
+    alert: bool,
+    alert_reason: Option<String>,
+    run_length_mode: usize,
+    run_length_mean: f64,
+    processing_latency_us: Option<u64>,
+}
+
+#[pymethods]
+impl PyOnlineStepResult {
+    #[getter]
+    fn t(&self) -> usize {
+        self.t
+    }
+
+    #[getter]
+    fn p_change(&self) -> f64 {
+        self.p_change
+    }
+
+    #[getter]
+    fn alert(&self) -> bool {
+        self.alert
+    }
+
+    #[getter]
+    fn alert_reason(&self) -> Option<String> {
+        self.alert_reason.clone()
+    }
+
+    #[getter]
+    fn run_length_mode(&self) -> usize {
+        self.run_length_mode
+    }
+
+    #[getter]
+    fn run_length_mean(&self) -> f64 {
+        self.run_length_mean
+    }
+
+    #[getter]
+    fn processing_latency_us(&self) -> Option<u64> {
+        self.processing_latency_us
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "OnlineStepResult(t={}, p_change={:.6}, alert={}, run_length_mode={}, run_length_mean={:.3})",
+            self.t, self.p_change, self.alert, self.run_length_mode, self.run_length_mean
+        )
+    }
+}
+
+impl From<CoreOnlineStepResult> for PyOnlineStepResult {
+    fn from(step: CoreOnlineStepResult) -> Self {
+        Self {
+            t: step.t,
+            p_change: step.p_change,
+            alert: step.alert,
+            alert_reason: step.alert_reason,
+            run_length_mode: step.run_length_mode,
+            run_length_mean: step.run_length_mean,
+            processing_latency_us: step.processing_latency_us,
+        }
+    }
+}
+
 #[pyclass(module = "cpd._cpd_rs", name = "OfflineChangePointResult", frozen)]
 #[derive(Clone, Debug)]
 pub struct PyOfflineChangePointResult {
@@ -491,13 +563,14 @@ impl PyOfflineChangePointResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        PyDiagnostics, PyOfflineChangePointResult, PyPruningStats, PySegmentStats,
-        repro_mode_to_str,
+        PyDiagnostics, PyOfflineChangePointResult, PyOnlineStepResult, PyPruningStats,
+        PySegmentStats, repro_mode_to_str,
     };
     use cpd_core::{
         DIAGNOSTICS_SCHEMA_VERSION, Diagnostics as CoreDiagnostics,
-        OfflineChangePointResult as CoreOfflineChangePointResult, PruningStats as CorePruningStats,
-        ReproMode, SegmentStats as CoreSegmentStats,
+        OfflineChangePointResult as CoreOfflineChangePointResult,
+        OnlineStepResult as CoreOnlineStepResult, PruningStats as CorePruningStats, ReproMode,
+        SegmentStats as CoreSegmentStats,
     };
     #[cfg(not(feature = "serde"))]
     use pyo3::exceptions::PyNotImplementedError;
@@ -574,6 +647,18 @@ mod tests {
                 },
             ]),
             diagnostics,
+        }
+    }
+
+    fn sample_online_step() -> CoreOnlineStepResult {
+        CoreOnlineStepResult {
+            t: 12,
+            p_change: 0.42,
+            alert: true,
+            alert_reason: Some("threshold crossed".to_string()),
+            run_length_mode: 3,
+            run_length_mean: 2.75,
+            processing_latency_us: Some(120),
         }
     }
 
@@ -739,6 +824,67 @@ mod tests {
                 .extract()
                 .expect("repr should be string");
             assert!(segment_repr.contains("SegmentStats"));
+        });
+    }
+
+    #[test]
+    fn online_step_result_properties_and_repr_are_stable() {
+        with_python(|py| {
+            let py_step = Py::new(py, PyOnlineStepResult::from(sample_online_step()))
+                .expect("online step should be constructible");
+            let step_any = py_step.bind(py);
+
+            let t: usize = step_any
+                .getattr("t")
+                .expect("t should be exported")
+                .extract()
+                .expect("t should be int");
+            let p_change: f64 = step_any
+                .getattr("p_change")
+                .expect("p_change should be exported")
+                .extract()
+                .expect("p_change should be float");
+            let alert: bool = step_any
+                .getattr("alert")
+                .expect("alert should be exported")
+                .extract()
+                .expect("alert should be bool");
+            let reason: Option<String> = step_any
+                .getattr("alert_reason")
+                .expect("alert_reason should be exported")
+                .extract()
+                .expect("alert_reason should be optional string");
+            let run_length_mode: usize = step_any
+                .getattr("run_length_mode")
+                .expect("run_length_mode should be exported")
+                .extract()
+                .expect("run_length_mode should be int");
+            let run_length_mean: f64 = step_any
+                .getattr("run_length_mean")
+                .expect("run_length_mean should be exported")
+                .extract()
+                .expect("run_length_mean should be float");
+            let processing_latency_us: Option<u64> = step_any
+                .getattr("processing_latency_us")
+                .expect("processing_latency_us should be exported")
+                .extract()
+                .expect("processing_latency_us should be optional int");
+
+            assert_eq!(t, 12);
+            assert!((p_change - 0.42).abs() < f64::EPSILON);
+            assert!(alert);
+            assert_eq!(reason.as_deref(), Some("threshold crossed"));
+            assert_eq!(run_length_mode, 3);
+            assert!((run_length_mean - 2.75).abs() < f64::EPSILON);
+            assert_eq!(processing_latency_us, Some(120));
+
+            let repr: String = step_any
+                .repr()
+                .expect("repr should succeed")
+                .extract()
+                .expect("repr should be string");
+            assert!(repr.contains("OnlineStepResult"));
+            assert!(repr.contains("p_change"));
         });
     }
 

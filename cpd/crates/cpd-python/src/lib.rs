@@ -13,11 +13,16 @@ use crate::error_map::cpd_error_to_pyerr;
 use crate::numpy_interop::{DTypePolicy, OwnedSeries, parse_numpy_series};
 use cpd_core::{
     CachePolicy, Constraints, CpdError, DegradationStep, ExecutionContext, MissingPolicy,
-    OfflineChangePointResult as CoreOfflineChangePointResult, OfflineDetector, Penalty, ReproMode,
-    Stopping, TimeSeriesView,
+    OfflineChangePointResult as CoreOfflineChangePointResult, OfflineDetector, OnlineDetector,
+    Penalty, ReproMode, Stopping, TimeSeriesView,
 };
 use cpd_costs::{CostL2Mean, CostNormalMeanVar};
 use cpd_offline::{BinSeg as OfflineBinSeg, BinSegConfig, Pelt as OfflinePelt, PeltConfig};
+use cpd_online::{
+    AlertPolicy, BocpdConfig, BocpdDetector, BocpdState, ConstantHazard, CusumConfig,
+    CusumDetector, CusumState, GeometricHazard, HazardSpec, LateDataPolicy, ObservationModel,
+    PageHinkleyConfig, PageHinkleyDetector, PageHinkleyState,
+};
 #[cfg(feature = "preprocess")]
 use cpd_preprocess::{
     DeseasonalizeConfig, DeseasonalizeMethod, DetrendConfig, DetrendMethod, PreprocessConfig,
@@ -26,7 +31,9 @@ use cpd_preprocess::{
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyDict, PyList, PyModule};
-use result_objects::{PyDiagnostics, PyOfflineChangePointResult, PyPruningStats, PySegmentStats};
+use result_objects::{
+    PyDiagnostics, PyOfflineChangePointResult, PyOnlineStepResult, PyPruningStats, PySegmentStats,
+};
 
 fn parse_sequence(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
     values.extract::<Vec<f64>>().map_err(|_| {
@@ -111,6 +118,288 @@ fn required_dict_key<'py>(
     dict.get_item(key)?.ok_or_else(|| {
         PyValueError::new_err(format!("{context} requires key '{key}' with a valid value"))
     })
+}
+
+fn parse_alert_policy(
+    value: Option<&Bound<'_, PyAny>>,
+    default_policy: AlertPolicy,
+) -> PyResult<AlertPolicy> {
+    let Some(value) = value else {
+        return Ok(default_policy);
+    };
+    if value.is_none() {
+        return Ok(default_policy);
+    }
+
+    let dict = value
+        .downcast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("alert_policy must be a dict"))?;
+
+    let mut threshold = default_policy.threshold;
+    let mut hysteresis = default_policy.hysteresis;
+    let mut cooldown_steps = default_policy.cooldown_steps;
+    let mut min_run_length = default_policy.min_run_length;
+    let mut saw_cooldown = false;
+    let mut saw_cooldown_steps = false;
+
+    for (key_obj, value_obj) in dict.iter() {
+        let key: String = key_obj
+            .extract()
+            .map_err(|_| PyTypeError::new_err("alert_policy keys must be strings"))?;
+        match key.as_str() {
+            "threshold" => {
+                threshold = value_obj
+                    .extract::<f64>()
+                    .map_err(|_| PyTypeError::new_err("alert_policy.threshold must be a float"))?
+            }
+            "hysteresis" => {
+                hysteresis = value_obj
+                    .extract::<f64>()
+                    .map_err(|_| PyTypeError::new_err("alert_policy.hysteresis must be a float"))?
+            }
+            "cooldown" => {
+                if saw_cooldown_steps {
+                    return Err(PyValueError::new_err(
+                        "alert_policy accepts only one of cooldown or cooldown_steps",
+                    ));
+                }
+                cooldown_steps = value_obj.extract::<usize>().map_err(|_| {
+                    PyTypeError::new_err("alert_policy.cooldown must be an integer")
+                })?;
+                saw_cooldown = true;
+            }
+            "cooldown_steps" => {
+                if saw_cooldown {
+                    return Err(PyValueError::new_err(
+                        "alert_policy accepts only one of cooldown or cooldown_steps",
+                    ));
+                }
+                cooldown_steps = value_obj.extract::<usize>().map_err(|_| {
+                    PyTypeError::new_err("alert_policy.cooldown_steps must be an integer")
+                })?;
+                saw_cooldown_steps = true;
+            }
+            "min_run_length" => {
+                min_run_length = value_obj.extract::<usize>().map_err(|_| {
+                    PyTypeError::new_err("alert_policy.min_run_length must be an integer")
+                })?
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "unsupported alert_policy key '{key}'"
+                )));
+            }
+        }
+    }
+
+    let policy = AlertPolicy::new(threshold, hysteresis, cooldown_steps, min_run_length);
+    policy.validate().map_err(cpd_error_to_pyerr)?;
+    Ok(policy)
+}
+
+fn parse_overflow_policy(value: &str) -> PyResult<cpd_online::OverflowPolicy> {
+    match value.to_ascii_lowercase().as_str() {
+        "drop_oldest" | "dropoldest" => Ok(cpd_online::OverflowPolicy::DropOldest),
+        "drop_newest" | "dropnewest" => Ok(cpd_online::OverflowPolicy::DropNewest),
+        "error" => Ok(cpd_online::OverflowPolicy::Error),
+        _ => Err(PyValueError::new_err(format!(
+            "unsupported late_data_policy.on_overflow '{value}'; expected one of: 'drop_oldest', 'drop_newest', 'error'"
+        ))),
+    }
+}
+
+fn parse_late_data_policy(value: Option<&Bound<'_, PyAny>>) -> PyResult<LateDataPolicy> {
+    let Some(value) = value else {
+        return Ok(LateDataPolicy::Reject);
+    };
+    if value.is_none() {
+        return Ok(LateDataPolicy::Reject);
+    }
+
+    if let Ok(named) = value.extract::<String>() {
+        return match named.to_ascii_lowercase().as_str() {
+            "reject" => Ok(LateDataPolicy::Reject),
+            _ => Err(PyValueError::new_err(format!(
+                "late_data_policy as string supports only 'reject'; use dict form for buffered policies"
+            ))),
+        };
+    }
+
+    let dict = value
+        .downcast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("late_data_policy must be a string or dict"))?;
+    let kind_obj = required_dict_key(dict, "kind", "late_data_policy")?;
+    let kind: String = kind_obj
+        .extract()
+        .map_err(|_| PyTypeError::new_err("late_data_policy.kind must be a string"))?;
+
+    match kind.to_ascii_lowercase().as_str() {
+        "reject" => Ok(LateDataPolicy::Reject),
+        "buffer_within_window" => {
+            let max_delay_ns = required_dict_key(dict, "max_delay_ns", "late_data_policy")?
+                .extract::<i64>()
+                .map_err(|_| {
+                    PyTypeError::new_err("late_data_policy.max_delay_ns must be an integer")
+                })?;
+            let max_buffer_items = required_dict_key(dict, "max_buffer_items", "late_data_policy")?
+                .extract::<usize>()
+                .map_err(|_| {
+                    PyTypeError::new_err("late_data_policy.max_buffer_items must be an integer")
+                })?;
+            let on_overflow = required_dict_key(dict, "on_overflow", "late_data_policy")?
+                .extract::<String>()
+                .map_err(|_| {
+                    PyTypeError::new_err("late_data_policy.on_overflow must be a string")
+                })?;
+            let policy = LateDataPolicy::BufferWithinWindow {
+                max_delay_ns,
+                max_buffer_items,
+                on_overflow: parse_overflow_policy(&on_overflow)?,
+            };
+            policy.validate().map_err(cpd_error_to_pyerr)?;
+            Ok(policy)
+        }
+        "reorder_by_timestamp" => {
+            let max_delay_ns = required_dict_key(dict, "max_delay_ns", "late_data_policy")?
+                .extract::<i64>()
+                .map_err(|_| {
+                    PyTypeError::new_err("late_data_policy.max_delay_ns must be an integer")
+                })?;
+            let max_buffer_items = required_dict_key(dict, "max_buffer_items", "late_data_policy")?
+                .extract::<usize>()
+                .map_err(|_| {
+                    PyTypeError::new_err("late_data_policy.max_buffer_items must be an integer")
+                })?;
+            let on_overflow = required_dict_key(dict, "on_overflow", "late_data_policy")?
+                .extract::<String>()
+                .map_err(|_| {
+                    PyTypeError::new_err("late_data_policy.on_overflow must be a string")
+                })?;
+            let policy = LateDataPolicy::ReorderByTimestamp {
+                max_delay_ns,
+                max_buffer_items,
+                on_overflow: parse_overflow_policy(&on_overflow)?,
+            };
+            policy.validate().map_err(cpd_error_to_pyerr)?;
+            Ok(policy)
+        }
+        _ => Err(PyValueError::new_err(format!(
+            "unsupported late_data_policy.kind '{kind}'; expected one of: 'reject', 'buffer_within_window', 'reorder_by_timestamp'"
+        ))),
+    }
+}
+
+fn parse_bocpd_observation_model(model: &str) -> PyResult<ObservationModel> {
+    match model.to_ascii_lowercase().as_str() {
+        "gaussian_nig" | "gaussian" => Ok(ObservationModel::Gaussian {
+            prior: cpd_online::GaussianNigPrior::default(),
+        }),
+        "poisson_gamma" | "poisson" => Ok(ObservationModel::Poisson {
+            prior: cpd_online::PoissonGammaPrior::default(),
+        }),
+        "bernoulli_beta" | "bernoulli" => Ok(ObservationModel::Bernoulli {
+            prior: cpd_online::BernoulliBetaPrior::default(),
+        }),
+        _ => Err(PyValueError::new_err(format!(
+            "unsupported model '{model}'; expected one of: 'gaussian_nig', 'poisson_gamma', 'bernoulli_beta'"
+        ))),
+    }
+}
+
+fn parse_bocpd_hazard(value: Option<&Bound<'_, PyAny>>) -> PyResult<HazardSpec> {
+    let Some(value) = value else {
+        return Ok(HazardSpec::default());
+    };
+    if value.is_none() {
+        return Ok(HazardSpec::default());
+    }
+
+    if let Ok(p_change) = value.extract::<f64>() {
+        let hazard = ConstantHazard::new(p_change).map_err(cpd_error_to_pyerr)?;
+        return Ok(HazardSpec::Constant(hazard));
+    }
+
+    let dict = value
+        .downcast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("hazard must be a float or dict"))?;
+    let kind_obj = required_dict_key(dict, "kind", "hazard")?;
+    let kind: String = kind_obj
+        .extract()
+        .map_err(|_| PyTypeError::new_err("hazard.kind must be a string"))?;
+
+    match kind.to_ascii_lowercase().as_str() {
+        "constant" => {
+            let p_change = required_dict_key(dict, "p_change", "hazard")?
+                .extract::<f64>()
+                .map_err(|_| PyTypeError::new_err("hazard.p_change must be a float"))?;
+            Ok(HazardSpec::Constant(
+                ConstantHazard::new(p_change).map_err(cpd_error_to_pyerr)?,
+            ))
+        }
+        "geometric" => {
+            let mean_run_length = required_dict_key(dict, "mean_run_length", "hazard")?
+                .extract::<f64>()
+                .map_err(|_| PyTypeError::new_err("hazard.mean_run_length must be a float"))?;
+            Ok(HazardSpec::Geometric(
+                GeometricHazard::new(mean_run_length).map_err(cpd_error_to_pyerr)?,
+            ))
+        }
+        _ => Err(PyValueError::new_err(format!(
+            "unsupported hazard.kind '{kind}'; expected one of: 'constant', 'geometric'"
+        ))),
+    }
+}
+
+fn bocpd_model_name(model: &ObservationModel) -> &'static str {
+    match model {
+        ObservationModel::Gaussian { .. } => "gaussian_nig",
+        ObservationModel::Poisson { .. } => "poisson_gamma",
+        ObservationModel::Bernoulli { .. } => "bernoulli_beta",
+    }
+}
+
+fn bocpd_hazard_name(hazard: &HazardSpec) -> &'static str {
+    match hazard {
+        HazardSpec::Constant(_) => "constant",
+        HazardSpec::Geometric(_) => "geometric",
+    }
+}
+
+fn online_update_scalar<D>(
+    detector: &mut D,
+    x_t: f64,
+    t_ns: Option<i64>,
+) -> PyResult<PyOnlineStepResult>
+where
+    D: OnlineDetector + Send,
+{
+    let constraints = Constraints::default();
+    let ctx = ExecutionContext::new(&constraints);
+    detector
+        .update(&[x_t], t_ns, &ctx)
+        .map(Into::into)
+        .map_err(cpd_error_to_pyerr)
+}
+
+fn online_update_many<D>(
+    py: Python<'_>,
+    detector: &mut D,
+    x_batch: &Bound<'_, PyAny>,
+) -> PyResult<Vec<PyOnlineStepResult>>
+where
+    D: OnlineDetector + Send,
+{
+    let owned = parse_owned_series(py, x_batch)?;
+    let steps = py
+        .allow_threads(|| {
+            let view = owned.view()?;
+            let constraints = Constraints::default();
+            let ctx = ExecutionContext::new(&constraints);
+            detector.update_many(&view, &ctx)
+        })
+        .map_err(cpd_error_to_pyerr)?;
+
+    Ok(steps.into_iter().map(Into::into).collect())
 }
 
 fn parse_cache_policy(value: &Bound<'_, PyAny>) -> PyResult<CachePolicy> {
@@ -974,6 +1263,230 @@ impl PyBinseg {
     }
 }
 
+#[pyclass(module = "cpd._cpd_rs", name = "_BocpdState", frozen)]
+#[derive(Clone, Debug)]
+pub struct PyBocpdState {
+    state: BocpdState,
+}
+
+impl From<BocpdState> for PyBocpdState {
+    fn from(state: BocpdState) -> Self {
+        Self { state }
+    }
+}
+
+#[pyclass(module = "cpd._cpd_rs", name = "_CusumState", frozen)]
+#[derive(Clone, Debug)]
+pub struct PyCusumState {
+    state: CusumState,
+}
+
+impl From<CusumState> for PyCusumState {
+    fn from(state: CusumState) -> Self {
+        Self { state }
+    }
+}
+
+#[pyclass(module = "cpd._cpd_rs", name = "_PageHinkleyState", frozen)]
+#[derive(Clone, Debug)]
+pub struct PyPageHinkleyState {
+    state: PageHinkleyState,
+}
+
+impl From<PageHinkleyState> for PyPageHinkleyState {
+    fn from(state: PageHinkleyState) -> Self {
+        Self { state }
+    }
+}
+
+/// Stateful BOCPD detector for streaming updates.
+#[pyclass(module = "cpd._cpd_rs", name = "Bocpd")]
+#[derive(Clone, Debug)]
+pub struct PyBocpd {
+    detector: BocpdDetector,
+}
+
+#[pymethods]
+impl PyBocpd {
+    #[new]
+    #[pyo3(signature = (model = "gaussian_nig", hazard = None, max_run_length = 2_000, alert_policy = None, late_data_policy = None))]
+    fn new(
+        model: &str,
+        hazard: Option<&Bound<'_, PyAny>>,
+        max_run_length: usize,
+        alert_policy: Option<&Bound<'_, PyAny>>,
+        late_data_policy: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let mut config = BocpdConfig::default();
+        config.observation = parse_bocpd_observation_model(model)?;
+        config.hazard = parse_bocpd_hazard(hazard)?;
+        config.max_run_length = max_run_length;
+        config.alert_policy = parse_alert_policy(alert_policy, config.alert_policy)?;
+        config.late_data_policy = parse_late_data_policy(late_data_policy)?;
+        let detector = BocpdDetector::new(config).map_err(cpd_error_to_pyerr)?;
+        Ok(Self { detector })
+    }
+
+    #[pyo3(signature = (x_t, t_ns = None))]
+    fn update(&mut self, x_t: f64, t_ns: Option<i64>) -> PyResult<PyOnlineStepResult> {
+        online_update_scalar(&mut self.detector, x_t, t_ns)
+    }
+
+    fn update_many(
+        &mut self,
+        py: Python<'_>,
+        x_batch: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<PyOnlineStepResult>> {
+        online_update_many(py, &mut self.detector, x_batch)
+    }
+
+    fn reset(&mut self) {
+        self.detector.reset();
+    }
+
+    fn save_state(&self) -> PyBocpdState {
+        self.detector.save_state().into()
+    }
+
+    fn load_state(&mut self, state: &PyBocpdState) {
+        self.detector.load_state(&state.state);
+    }
+
+    fn __repr__(&self) -> String {
+        let config = self.detector.config();
+        format!(
+            "Bocpd(model='{}', hazard='{}', max_run_length={})",
+            bocpd_model_name(&config.observation),
+            bocpd_hazard_name(&config.hazard),
+            config.max_run_length
+        )
+    }
+}
+
+/// Stateful CUSUM detector for streaming updates.
+#[pyclass(module = "cpd._cpd_rs", name = "Cusum")]
+#[derive(Clone, Debug)]
+pub struct PyCusum {
+    detector: CusumDetector,
+}
+
+#[pymethods]
+impl PyCusum {
+    #[new]
+    #[pyo3(signature = (drift = 0.0, threshold = 8.0, target_mean = 0.0, alert_policy = None, late_data_policy = None))]
+    fn new(
+        drift: f64,
+        threshold: f64,
+        target_mean: f64,
+        alert_policy: Option<&Bound<'_, PyAny>>,
+        late_data_policy: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let mut config = CusumConfig::default();
+        config.drift = drift;
+        config.threshold = threshold;
+        config.target_mean = target_mean;
+        config.alert_policy = parse_alert_policy(alert_policy, config.alert_policy)?;
+        config.late_data_policy = parse_late_data_policy(late_data_policy)?;
+        let detector = CusumDetector::new(config).map_err(cpd_error_to_pyerr)?;
+        Ok(Self { detector })
+    }
+
+    #[pyo3(signature = (x_t, t_ns = None))]
+    fn update(&mut self, x_t: f64, t_ns: Option<i64>) -> PyResult<PyOnlineStepResult> {
+        online_update_scalar(&mut self.detector, x_t, t_ns)
+    }
+
+    fn update_many(
+        &mut self,
+        py: Python<'_>,
+        x_batch: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<PyOnlineStepResult>> {
+        online_update_many(py, &mut self.detector, x_batch)
+    }
+
+    fn reset(&mut self) {
+        self.detector.reset();
+    }
+
+    fn save_state(&self) -> PyCusumState {
+        self.detector.save_state().into()
+    }
+
+    fn load_state(&mut self, state: &PyCusumState) {
+        self.detector.load_state(&state.state);
+    }
+
+    fn __repr__(&self) -> String {
+        let config = self.detector.config();
+        format!(
+            "Cusum(drift={}, threshold={}, target_mean={})",
+            config.drift, config.threshold, config.target_mean
+        )
+    }
+}
+
+/// Stateful Page-Hinkley detector for streaming updates.
+#[pyclass(module = "cpd._cpd_rs", name = "PageHinkley")]
+#[derive(Clone, Debug)]
+pub struct PyPageHinkley {
+    detector: PageHinkleyDetector,
+}
+
+#[pymethods]
+impl PyPageHinkley {
+    #[new]
+    #[pyo3(signature = (delta = 0.01, threshold = 8.0, initial_mean = 0.0, alert_policy = None, late_data_policy = None))]
+    fn new(
+        delta: f64,
+        threshold: f64,
+        initial_mean: f64,
+        alert_policy: Option<&Bound<'_, PyAny>>,
+        late_data_policy: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let mut config = PageHinkleyConfig::default();
+        config.delta = delta;
+        config.threshold = threshold;
+        config.initial_mean = initial_mean;
+        config.alert_policy = parse_alert_policy(alert_policy, config.alert_policy)?;
+        config.late_data_policy = parse_late_data_policy(late_data_policy)?;
+        let detector = PageHinkleyDetector::new(config).map_err(cpd_error_to_pyerr)?;
+        Ok(Self { detector })
+    }
+
+    #[pyo3(signature = (x_t, t_ns = None))]
+    fn update(&mut self, x_t: f64, t_ns: Option<i64>) -> PyResult<PyOnlineStepResult> {
+        online_update_scalar(&mut self.detector, x_t, t_ns)
+    }
+
+    fn update_many(
+        &mut self,
+        py: Python<'_>,
+        x_batch: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<PyOnlineStepResult>> {
+        online_update_many(py, &mut self.detector, x_batch)
+    }
+
+    fn reset(&mut self) {
+        self.detector.reset();
+    }
+
+    fn save_state(&self) -> PyPageHinkleyState {
+        self.detector.save_state().into()
+    }
+
+    fn load_state(&mut self, state: &PyPageHinkleyState) {
+        self.detector.load_state(&state.state);
+    }
+
+    fn __repr__(&self) -> String {
+        let config = self.detector.config();
+        format!(
+            "PageHinkley(delta={}, threshold={}, initial_mean={})",
+            config.delta, config.threshold, config.initial_mean
+        )
+    }
+}
+
 /// Low-level power-user API for fully-specified offline detection.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
@@ -1103,8 +1616,15 @@ fn _cpd_rs(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PySegmentStats>()?;
     module.add_class::<PyDiagnostics>()?;
     module.add_class::<PyOfflineChangePointResult>()?;
+    module.add_class::<PyOnlineStepResult>()?;
     module.add_class::<PyPelt>()?;
     module.add_class::<PyBinseg>()?;
+    module.add_class::<PyBocpd>()?;
+    module.add_class::<PyCusum>()?;
+    module.add_class::<PyPageHinkley>()?;
+    module.add_class::<PyBocpdState>()?;
+    module.add_class::<PyCusumState>()?;
+    module.add_class::<PyPageHinkleyState>()?;
     module.add_class::<SmokeDetector>()?;
     module.add_function(wrap_pyfunction!(detect_offline, module)?)?;
     module.add_function(wrap_pyfunction!(smoke_detect, module)?)?;
@@ -1188,8 +1708,16 @@ mod tests {
             module
                 .getattr("OfflineChangePointResult")
                 .expect("OfflineChangePointResult should be exported");
+            module
+                .getattr("OnlineStepResult")
+                .expect("OnlineStepResult should be exported");
             module.getattr("Pelt").expect("Pelt should be exported");
             module.getattr("Binseg").expect("Binseg should be exported");
+            module.getattr("Bocpd").expect("Bocpd should be exported");
+            module.getattr("Cusum").expect("Cusum should be exported");
+            module
+                .getattr("PageHinkley")
+                .expect("PageHinkley should be exported");
             module
                 .getattr("detect_offline")
                 .expect("detect_offline should be exported");
