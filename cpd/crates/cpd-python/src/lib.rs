@@ -21,7 +21,7 @@ use cpd_offline::{BinSeg as OfflineBinSeg, BinSegConfig, Pelt as OfflinePelt, Pe
 use cpd_online::{
     AlertPolicy, BocpdConfig, BocpdDetector, BocpdState, ConstantHazard, CusumConfig,
     CusumDetector, CusumState, GeometricHazard, HazardSpec, LateDataPolicy, ObservationModel,
-    PageHinkleyConfig, PageHinkleyDetector, PageHinkleyState,
+    ObservationStats, PageHinkleyConfig, PageHinkleyDetector, PageHinkleyState,
 };
 #[cfg(feature = "preprocess")]
 use cpd_preprocess::{
@@ -118,6 +118,20 @@ fn required_dict_key<'py>(
     dict.get_item(key)?.ok_or_else(|| {
         PyValueError::new_err(format!("{context} requires key '{key}' with a valid value"))
     })
+}
+
+fn reject_unknown_keys(dict: &Bound<'_, PyDict>, context: &str, allowed: &[&str]) -> PyResult<()> {
+    for (key_obj, _) in dict.iter() {
+        let key: String = key_obj
+            .extract()
+            .map_err(|_| PyTypeError::new_err(format!("{context} keys must be strings")))?;
+        if !allowed.contains(&key.as_str()) {
+            return Err(PyValueError::new_err(format!(
+                "unsupported {context} key '{key}'"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn parse_alert_policy(
@@ -234,8 +248,16 @@ fn parse_late_data_policy(value: Option<&Bound<'_, PyAny>>) -> PyResult<LateData
         .map_err(|_| PyTypeError::new_err("late_data_policy.kind must be a string"))?;
 
     match kind.to_ascii_lowercase().as_str() {
-        "reject" => Ok(LateDataPolicy::Reject),
+        "reject" => {
+            reject_unknown_keys(dict, "late_data_policy", &["kind"])?;
+            Ok(LateDataPolicy::Reject)
+        }
         "buffer_within_window" => {
+            reject_unknown_keys(
+                dict,
+                "late_data_policy",
+                &["kind", "max_delay_ns", "max_buffer_items", "on_overflow"],
+            )?;
             let max_delay_ns = required_dict_key(dict, "max_delay_ns", "late_data_policy")?
                 .extract::<i64>()
                 .map_err(|_| {
@@ -260,6 +282,11 @@ fn parse_late_data_policy(value: Option<&Bound<'_, PyAny>>) -> PyResult<LateData
             Ok(policy)
         }
         "reorder_by_timestamp" => {
+            reject_unknown_keys(
+                dict,
+                "late_data_policy",
+                &["kind", "max_delay_ns", "max_buffer_items", "on_overflow"],
+            )?;
             let max_delay_ns = required_dict_key(dict, "max_delay_ns", "late_data_policy")?
                 .extract::<i64>()
                 .map_err(|_| {
@@ -329,6 +356,7 @@ fn parse_bocpd_hazard(value: Option<&Bound<'_, PyAny>>) -> PyResult<HazardSpec> 
 
     match kind.to_ascii_lowercase().as_str() {
         "constant" => {
+            reject_unknown_keys(dict, "hazard", &["kind", "p_change"])?;
             let p_change = required_dict_key(dict, "p_change", "hazard")?
                 .extract::<f64>()
                 .map_err(|_| PyTypeError::new_err("hazard.p_change must be a float"))?;
@@ -337,6 +365,7 @@ fn parse_bocpd_hazard(value: Option<&Bound<'_, PyAny>>) -> PyResult<HazardSpec> 
             ))
         }
         "geometric" => {
+            reject_unknown_keys(dict, "hazard", &["kind", "mean_run_length"])?;
             let mean_run_length = required_dict_key(dict, "mean_run_length", "hazard")?
                 .extract::<f64>()
                 .map_err(|_| PyTypeError::new_err("hazard.mean_run_length must be a float"))?;
@@ -363,6 +392,25 @@ fn bocpd_hazard_name(hazard: &HazardSpec) -> &'static str {
         HazardSpec::Constant(_) => "constant",
         HazardSpec::Geometric(_) => "geometric",
     }
+}
+
+fn bocpd_state_matches_observation(state: &BocpdState, observation: &ObservationModel) -> bool {
+    !state.run_stats.is_empty()
+        && state.run_stats.iter().all(|stats| {
+            matches!(
+                (observation, stats),
+                (
+                    ObservationModel::Gaussian { .. },
+                    ObservationStats::Gaussian { .. }
+                ) | (
+                    ObservationModel::Poisson { .. },
+                    ObservationStats::Poisson { .. }
+                ) | (
+                    ObservationModel::Bernoulli { .. },
+                    ObservationStats::Bernoulli { .. }
+                )
+            )
+        })
 }
 
 fn online_update_scalar<D>(
@@ -1348,8 +1396,16 @@ impl PyBocpd {
         self.detector.save_state().into()
     }
 
-    fn load_state(&mut self, state: &PyBocpdState) {
+    fn load_state(&mut self, state: &PyBocpdState) -> PyResult<()> {
+        let observation = &self.detector.config().observation;
+        if !bocpd_state_matches_observation(&state.state, observation) {
+            return Err(PyValueError::new_err(format!(
+                "incompatible Bocpd state for model '{}': state run_stats variant does not match detector observation model",
+                bocpd_model_name(observation)
+            )));
+        }
         self.detector.load_state(&state.state);
+        Ok(())
     }
 
     fn __repr__(&self) -> String {

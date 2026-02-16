@@ -142,6 +142,33 @@ def test_update_accepts_event_time_and_rejects_late_data_by_default() -> None:
         detector.update(1.0, t_ns=999)
 
 
+def test_bocpd_load_state_rejects_incompatible_model_immediately() -> None:
+    source = cpd.Bocpd(model="gaussian_nig", hazard=1.0 / 200.0, max_run_length=128)
+    for value in [0.0, 0.0, 1.0, 1.0]:
+        source.update(value)
+    state = source.save_state()
+
+    target = cpd.Bocpd(model="bernoulli_beta", hazard=1.0 / 200.0, max_run_length=128)
+    with pytest.raises(ValueError, match="incompatible Bocpd state"):
+        target.load_state(state)
+
+
+def test_streaming_config_rejects_unknown_hazard_and_late_data_keys() -> None:
+    with pytest.raises(ValueError, match="unsupported hazard key 'extra'"):
+        cpd.Bocpd(hazard={"kind": "constant", "p_change": 0.01, "extra": 1})
+
+    with pytest.raises(ValueError, match="unsupported late_data_policy key 'extra'"):
+        cpd.Bocpd(
+            late_data_policy={
+                "kind": "buffer_within_window",
+                "max_delay_ns": 10,
+                "max_buffer_items": 2,
+                "on_overflow": "drop_newest",
+                "extra": 1,
+            }
+        )
+
+
 def test_update_many_releases_gil() -> None:
     n = 500_000
     values = np.zeros(n, dtype=np.float64)
