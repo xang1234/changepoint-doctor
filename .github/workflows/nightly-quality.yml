@@ -99,12 +99,17 @@ jobs:
             --metrics cpd/nightly-soak-metrics.json \
             --profile nightly_1h
 
-      - name: Run BOCPD perf gate (release)
+      - name: Run online perf gates (release)
         working-directory: cpd
         env:
           CPD_ONLINE_PERF_ENFORCE: "1"
           CPD_ONLINE_PERF_METRICS_OUT: ${{ github.workspace }}/cpd/nightly-bocpd-perf-metrics.json
-        run: cargo test -p cpd-online --test perf bocpd_gaussian_perf_contract --release -- --exact --nocapture
+          CPD_ONLINE_CUSUM_PERF_METRICS_OUT: ${{ github.workspace }}/cpd/nightly-cusum-perf-metrics.json
+          CPD_ONLINE_PAGE_HINKLEY_PERF_METRICS_OUT: ${{ github.workspace }}/cpd/nightly-page-hinkley-perf-metrics.json
+        run: |
+          cargo test -p cpd-online --test perf bocpd_gaussian_perf_contract --release -- --exact --nocapture
+          cargo test -p cpd-online --test perf cusum_perf_contract --release -- --exact --nocapture
+          cargo test -p cpd-online --test perf page_hinkley_perf_contract --release -- --exact --nocapture
 
       - name: Run release-mode workspace tests
         working-directory: cpd
@@ -136,6 +141,22 @@ jobs:
         with:
           name: cpd-online-bocpd-perf-metrics-nightly-1h
           path: cpd/nightly-bocpd-perf-metrics.json
+          if-no-files-found: warn
+
+      - name: Upload CUSUM perf metrics artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpd-online-cusum-perf-metrics-nightly-1h
+          path: cpd/nightly-cusum-perf-metrics.json
+          if-no-files-found: warn
+
+      - name: Upload Page-Hinkley perf metrics artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpd-online-page-hinkley-perf-metrics-nightly-1h
+          path: cpd/nightly-page-hinkley-perf-metrics.json
           if-no-files-found: warn
 
   soak-tests-24h:

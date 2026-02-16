@@ -4,7 +4,8 @@
 
 use cpd_core::{Constraints, CpdError, ExecutionContext, OnlineDetector};
 use cpd_online::{
-    BocpdConfig, BocpdDetector, ConstantHazard, HazardSpec, LateDataPolicy, ObservationModel,
+    BocpdConfig, BocpdDetector, ConstantHazard, CusumConfig, CusumDetector, HazardSpec,
+    LateDataPolicy, ObservationModel, PageHinkleyConfig, PageHinkleyDetector,
 };
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -17,6 +18,9 @@ const SLO_P99_UPDATE_US: u64 = 75;
 const SLO_UPDATES_PER_SEC: f64 = 150_000.0;
 const MIN_P95_RUN_LENGTH_MODE: usize = 64;
 const SIGNAL_REGIME_LEN: usize = 96;
+const BASELINE_WARMUP_STEPS: usize = 20_000;
+const BASELINE_MEASURE_STEPS: usize = 500_000;
+const BASELINE_SLO_UPDATES_PER_SEC: f64 = 10_000_000.0;
 
 fn ctx() -> ExecutionContext<'static> {
     static CONSTRAINTS: OnceLock<Constraints> = OnceLock::new();
@@ -67,7 +71,7 @@ fn make_signal(total_steps: usize) -> Vec<f64> {
     (0..total_steps).map(perf_signal).collect()
 }
 
-fn emit_metrics_if_requested(
+fn emit_bocpd_metrics_if_requested(
     updates_per_sec: f64,
     p99_update_us: u64,
     p95_run_length_mode: usize,
@@ -84,6 +88,62 @@ fn emit_metrics_if_requested(
     std::fs::write(path, payload).map_err(|err| {
         CpdError::resource_limit(format!("failed writing perf metrics artifact: {err}"))
     })
+}
+
+fn emit_baseline_metrics_if_requested(
+    env_var: &str,
+    scenario: &str,
+    updates_per_sec: f64,
+    max_update_us: u64,
+    enforce: bool,
+) -> Result<(), CpdError> {
+    let Some(path) = std::env::var(env_var).ok() else {
+        return Ok(());
+    };
+
+    let payload = format!(
+        "{{\n  \"scenario\": \"{scenario}\",\n  \"warmup_steps\": {BASELINE_WARMUP_STEPS},\n  \"measure_steps\": {BASELINE_MEASURE_STEPS},\n  \"updates_per_sec\": {updates_per_sec},\n  \"max_update_us\": {max_update_us},\n  \"slo_updates_per_sec\": {BASELINE_SLO_UPDATES_PER_SEC},\n  \"enforce\": {enforce}\n}}\n",
+    );
+
+    std::fs::write(path, payload).map_err(|err| {
+        CpdError::resource_limit(format!(
+            "failed writing baseline perf metrics artifact: {err}"
+        ))
+    })
+}
+
+fn run_baseline_core_perf_contract<F>(
+    signal: &[f64],
+    metrics_env: &str,
+    scenario: &str,
+    enforce: bool,
+    mut update_core: F,
+) -> Result<f64, CpdError>
+where
+    F: FnMut(f64) -> Result<(), CpdError>,
+{
+    if signal.len() < BASELINE_WARMUP_STEPS + BASELINE_MEASURE_STEPS {
+        return Err(CpdError::invalid_input(format!(
+            "baseline perf signal too short: len={}, required={}",
+            signal.len(),
+            BASELINE_WARMUP_STEPS + BASELINE_MEASURE_STEPS
+        )));
+    }
+
+    for step in 0..BASELINE_WARMUP_STEPS {
+        update_core(signal[step])?;
+    }
+
+    let started_at = Instant::now();
+    for step in 0..BASELINE_MEASURE_STEPS {
+        update_core(signal[BASELINE_WARMUP_STEPS + step])?;
+    }
+    let elapsed = started_at.elapsed();
+    let updates_per_sec = (BASELINE_MEASURE_STEPS as f64) / elapsed.as_secs_f64().max(1e-9);
+
+    emit_baseline_metrics_if_requested(metrics_env, scenario, updates_per_sec, 0, enforce)?;
+
+    Ok(updates_per_sec)
 }
 
 #[test]
@@ -139,7 +199,7 @@ fn bocpd_gaussian_perf_contract() {
         enforce
     );
 
-    emit_metrics_if_requested(updates_per_sec, p99_update_us, p95_run_length_mode, enforce)
+    emit_bocpd_metrics_if_requested(updates_per_sec, p99_update_us, p95_run_length_mode, enforce)
         .expect("metrics artifact emission should succeed");
 
     if enforce {
@@ -163,5 +223,79 @@ fn bocpd_gaussian_perf_contract() {
     } else {
         assert!(updates_per_sec.is_finite() && updates_per_sec > 0.0);
         assert!(!latencies_us.is_empty());
+    }
+}
+
+#[test]
+fn cusum_perf_contract() {
+    let enforce = parse_env_bool("CPD_ONLINE_PERF_ENFORCE");
+    let signal = make_signal(BASELINE_WARMUP_STEPS + BASELINE_MEASURE_STEPS);
+    let mut detector = CusumDetector::new(CusumConfig {
+        drift: 0.02,
+        threshold: 5.0,
+        target_mean: 0.0,
+        late_data_policy: LateDataPolicy::Reject,
+    })
+    .expect("CUSUM config should be valid");
+
+    let updates_per_sec = run_baseline_core_perf_contract(
+        &signal,
+        "CPD_ONLINE_CUSUM_PERF_METRICS_OUT",
+        "cusum_upward_d1_core",
+        enforce,
+        |x| detector.update_core(x),
+    )
+    .expect("CUSUM perf run should succeed");
+
+    println!(
+        "CUSUM core perf: steps={} elapsed-driven updates_per_sec={:.2} enforce={}",
+        BASELINE_MEASURE_STEPS, updates_per_sec, enforce
+    );
+
+    if enforce {
+        assert!(
+            updates_per_sec >= BASELINE_SLO_UPDATES_PER_SEC,
+            "CUSUM throughput SLO failed: observed={updates_per_sec:.2} updates/sec, threshold={} updates/sec",
+            BASELINE_SLO_UPDATES_PER_SEC
+        );
+    } else {
+        assert!(updates_per_sec.is_finite() && updates_per_sec > 0.0);
+    }
+}
+
+#[test]
+fn page_hinkley_perf_contract() {
+    let enforce = parse_env_bool("CPD_ONLINE_PERF_ENFORCE");
+    let signal = make_signal(BASELINE_WARMUP_STEPS + BASELINE_MEASURE_STEPS);
+    let mut detector = PageHinkleyDetector::new(PageHinkleyConfig {
+        delta: 0.02,
+        threshold: 5.0,
+        initial_mean: 0.0,
+        late_data_policy: LateDataPolicy::Reject,
+    })
+    .expect("Page-Hinkley config should be valid");
+
+    let updates_per_sec = run_baseline_core_perf_contract(
+        &signal,
+        "CPD_ONLINE_PAGE_HINKLEY_PERF_METRICS_OUT",
+        "page_hinkley_d1_core",
+        enforce,
+        |x| detector.update_core(x),
+    )
+    .expect("Page-Hinkley perf run should succeed");
+
+    println!(
+        "Page-Hinkley core perf: steps={} elapsed-driven updates_per_sec={:.2} enforce={}",
+        BASELINE_MEASURE_STEPS, updates_per_sec, enforce
+    );
+
+    if enforce {
+        assert!(
+            updates_per_sec >= BASELINE_SLO_UPDATES_PER_SEC,
+            "Page-Hinkley throughput SLO failed: observed={updates_per_sec:.2} updates/sec, threshold={} updates/sec",
+            BASELINE_SLO_UPDATES_PER_SEC
+        );
+    } else {
+        assert!(updates_per_sec.is_finite() && updates_per_sec > 0.0);
     }
 }

@@ -2,9 +2,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod baseline;
 pub mod bocpd;
 pub mod event_time;
 
+pub use baseline::{
+    CusumConfig, CusumDetector, CusumState, PageHinkleyConfig, PageHinkleyDetector,
+    PageHinkleyState,
+};
 pub use bocpd::{
     BernoulliBetaPrior, BocpdConfig, BocpdDetector, BocpdState, ConstantHazard, GaussianNigPrior,
     GeometricHazard, HazardFunction, HazardSpec, ObservationModel, ObservationStats,
