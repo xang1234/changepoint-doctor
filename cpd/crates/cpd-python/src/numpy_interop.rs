@@ -170,6 +170,10 @@ impl<'py> ParsedSeries<'py> {
 }
 
 impl OwnedSeries {
+    pub(crate) fn n_samples(&self) -> usize {
+        self.n
+    }
+
     pub(crate) fn view(&self) -> Result<TimeSeriesView<'_>, CpdError> {
         let values = match &self.values {
             OwnedValueStorage::F32(values) => DTypeView::F32(values.as_slice()),

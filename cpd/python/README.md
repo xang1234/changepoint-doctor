@@ -26,6 +26,36 @@ before debugging `pyo3`/linker errors.
 - `cpd.detect_offline`: low-level API for explicit detector/cost/constraints/stopping/preprocess selection.
 - `cpd.OfflineChangePointResult`: typed result object with breakpoints and diagnostics.
 
+## Streaming `update()` vs `update_many()` Policy
+
+`update_many()` now uses a size-aware GIL strategy in Rust bindings:
+
+- Batches with `< 16` samples: keep the GIL (lower overhead for tiny micro-batches).
+- Batches with `>= 16` samples: release the GIL (`py.allow_threads`) for throughput and thread fairness.
+
+To reproduce the benchmark snapshot used for this policy:
+
+```bash
+cd cpd/python
+python -m pip install --upgrade pytest
+pytest -q tests/test_streaming_perf_contract.py
+```
+
+Optional controls:
+
+- `CPD_PY_STREAMING_PERF_ENFORCE=1`: enable stricter ratio gates.
+- `CPD_PY_STREAMING_PERF_REPORT_OUT=/tmp/cpd-python-streaming-perf.json`: write JSON metrics.
+
+Reference run (local dev machine, `tests/test_streaming_perf_contract.py`):
+
+| Batch size | `update()` mean ms | `update_many()` mean ms | `update_many()` speedup vs `update()` |
+| --- | ---: | ---: | ---: |
+| 1 | 0.0035 | 0.0097 | 0.36x |
+| 8 | 0.0167 | 0.0184 | 0.91x |
+| 16 | 0.0306 | 0.0268 | 1.14x |
+| 64 | 0.1174 | 0.0790 | 1.48x |
+| 4096 | 7.3775 | 4.2477 | 1.74x |
+
 ## Masking Risk Guidance
 
 If BinSeg diagnostics indicate masking risk (for example warnings that closely

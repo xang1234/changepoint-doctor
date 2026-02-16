@@ -542,6 +542,12 @@ where
         .map_err(cpd_error_to_pyerr)
 }
 
+const UPDATE_MANY_GIL_RELEASE_MIN_BATCH: usize = 16;
+
+fn should_release_gil_for_update_many(n_samples: usize) -> bool {
+    n_samples >= UPDATE_MANY_GIL_RELEASE_MIN_BATCH
+}
+
 fn online_update_many<D>(
     py: Python<'_>,
     detector: &mut D,
@@ -551,14 +557,22 @@ where
     D: OnlineDetector + Send,
 {
     let owned = parse_owned_series(py, x_batch)?;
-    let steps = py
-        .allow_threads(|| {
+    let steps = if should_release_gil_for_update_many(owned.n_samples()) {
+        py.allow_threads(|| {
             let view = owned.view()?;
             let constraints = Constraints::default();
             let ctx = ExecutionContext::new(&constraints);
             detector.update_many(&view, &ctx)
         })
-        .map_err(cpd_error_to_pyerr)?;
+        .map_err(cpd_error_to_pyerr)?
+    } else {
+        let view = owned.view().map_err(cpd_error_to_pyerr)?;
+        let constraints = Constraints::default();
+        let ctx = ExecutionContext::new(&constraints);
+        detector
+            .update_many(&view, &ctx)
+            .map_err(cpd_error_to_pyerr)?
+    };
 
     Ok(steps.into_iter().map(Into::into).collect())
 }
@@ -2025,7 +2039,10 @@ fn _cpd_rs(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{_cpd_rs, PyBinseg, PyPelt, SmokeDetector, smoke_detect};
+    use super::{
+        _cpd_rs, PyBinseg, PyPelt, SmokeDetector, UPDATE_MANY_GIL_RELEASE_MIN_BATCH,
+        should_release_gil_for_update_many, smoke_detect,
+    };
     use pyo3::Python;
     use pyo3::exceptions::{PyRuntimeError, PyValueError};
     use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyModule};
@@ -2066,6 +2083,23 @@ mod tests {
             let out = smoke_detect(values.as_any()).expect("smoke_detect should succeed");
             assert_eq!(out, vec![4]);
         });
+    }
+
+    #[test]
+    fn update_many_gil_policy_uses_small_batch_cutoff() {
+        let cutoff = UPDATE_MANY_GIL_RELEASE_MIN_BATCH;
+        assert!(
+            !should_release_gil_for_update_many(cutoff.saturating_sub(1)),
+            "batch below cutoff should keep the GIL"
+        );
+        assert!(
+            should_release_gil_for_update_many(cutoff),
+            "batch at cutoff should release the GIL"
+        );
+        assert!(
+            should_release_gil_for_update_many(cutoff + 1),
+            "batch above cutoff should release the GIL"
+        );
     }
 
     #[test]
