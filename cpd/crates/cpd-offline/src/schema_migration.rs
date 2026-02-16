@@ -71,7 +71,7 @@ impl PeltConfigWire {
 pub struct BinSegConfigWire {
     pub schema_version: u32,
     pub stopping: Stopping,
-    #[serde(default = "default_params_per_segment")]
+    #[serde(default = "default_binseg_params_per_segment")]
     pub params_per_segment: usize,
     #[serde(default = "default_cancel_check_every")]
     pub cancel_check_every: usize,
@@ -195,6 +195,10 @@ fn default_params_per_segment() -> usize {
     PeltConfig::default().params_per_segment
 }
 
+fn default_binseg_params_per_segment() -> usize {
+    BinSegConfig::default().params_per_segment
+}
+
 fn default_cancel_check_every() -> usize {
     PeltConfig::default().cancel_check_every
 }
@@ -219,11 +223,6 @@ fn validate_pelt_config(config: &PeltConfig) -> Result<(), CpdError> {
 
 fn validate_binseg_config(config: &BinSegConfig) -> Result<(), CpdError> {
     validate_stopping(&config.stopping)?;
-    if config.params_per_segment == 0 {
-        return Err(CpdError::invalid_input(
-            "BinSegConfig.params_per_segment must be >= 1; got 0",
-        ));
-    }
     Ok(())
 }
 
@@ -244,7 +243,7 @@ fn validate_wbs_config(config: &WbsConfig) -> Result<(), CpdError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BinSegConfigWire, PeltConfigWire, WbsConfigWire};
+    use super::{BinSegConfig, BinSegConfigWire, PeltConfigWire, WbsConfigWire};
     use cpd_core::{MAX_FORWARD_COMPAT_SCHEMA_VERSION, MIGRATION_GUIDANCE_PATH};
     use serde_json::{Value, json};
 
@@ -349,7 +348,10 @@ mod tests {
         let binseg_runtime = binseg_wire
             .to_runtime()
             .expect("binseg to_runtime should fill defaults");
-        assert_eq!(binseg_runtime.params_per_segment, 2);
+        assert_eq!(
+            binseg_runtime.params_per_segment,
+            BinSegConfig::default().params_per_segment
+        );
         assert_eq!(binseg_runtime.cancel_check_every, 1000);
 
         let mut wbs_wire: WbsConfigWire = serde_json::from_value(json!({

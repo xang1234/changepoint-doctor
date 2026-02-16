@@ -427,7 +427,7 @@ fn run_pelt_penalty_path<C: CostModel>(
         last_cp: Vec<usize>,
         changes: Vec<usize>,
         candidate_set: Vec<usize>,
-        run_cost_queries: usize,
+        run_candidates_scored: usize,
         run_considered: usize,
         run_pruned: usize,
     }
@@ -445,26 +445,28 @@ fn run_pelt_penalty_path<C: CostModel>(
             last_cp,
             changes,
             candidate_set: vec![0usize],
-            run_cost_queries: 0,
+            run_candidates_scored: 0,
             run_considered: 0,
             run_pruned: 0,
         });
     }
 
+    let mut runtime_control_iteration = 0usize;
     for (target_idx, &t) in targets.iter().enumerate() {
-        if target_idx.is_multiple_of(cancel_check_every) {
-            ctx.check_cancelled_every(target_idx, 1)?;
-            match ctx.check_time_budget(started_at)? {
-                BudgetStatus::WithinBudget => {}
-                BudgetStatus::ExceededSoftDegrade => {
-                    runtime.soft_budget_exceeded = true;
-                }
-            }
-        }
-
         let mut segment_cost_cache: HashMap<usize, f64> = HashMap::new();
 
         for (path_idx, state) in states.iter_mut().enumerate() {
+            checked_counter_increment(&mut runtime_control_iteration, "runtime_control_iteration")?;
+            if runtime_control_iteration.is_multiple_of(cancel_check_every) {
+                ctx.check_cancelled_every(runtime_control_iteration, 1)?;
+                match ctx.check_time_budget(started_at)? {
+                    BudgetStatus::WithinBudget => {}
+                    BudgetStatus::ExceededSoftDegrade => {
+                        runtime.soft_budget_exceeded = true;
+                    }
+                }
+            }
+
             let beta = betas[path_idx];
             let mut scored = vec![None; state.candidate_set.len()];
             let mut best_cost = f64::INFINITY;
@@ -499,7 +501,10 @@ fn run_pelt_penalty_path<C: CostModel>(
                     cost
                 };
 
-                checked_counter_increment(&mut state.run_cost_queries, "run_cost_queries")?;
+                checked_counter_increment(
+                    &mut state.run_candidates_scored,
+                    "run_candidates_scored",
+                )?;
                 checked_counter_increment(
                     &mut runtime.candidates_considered,
                     "candidates_considered",
@@ -586,7 +591,7 @@ fn run_pelt_penalty_path<C: CostModel>(
             breakpoints,
             change_count,
             objective: state.f[x.n],
-            cost_evals: state.run_cost_queries,
+            cost_evals: state.run_candidates_scored,
             candidates_considered: state.run_considered,
             candidates_pruned: state.run_pruned,
         });
@@ -856,7 +861,7 @@ impl<C: CostModel> OfflineDetector for Pelt<C> {
                     ));
                 }
 
-                run_cost_note_label = "run_cost_queries";
+                run_cost_note_label = "run_candidates_scored";
                 kernels
                     .into_iter()
                     .next()

@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 const DEFAULT_CANCEL_CHECK_EVERY: usize = 1000;
-const DEFAULT_PARAMS_PER_SEGMENT: usize = 2;
+const AUTO_PARAMS_PER_SEGMENT: usize = 0;
 
 /// Configuration for [`BinSeg`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -27,7 +27,7 @@ impl Default for BinSegConfig {
     fn default() -> Self {
         Self {
             stopping: Stopping::Penalized(Penalty::BIC),
-            params_per_segment: 2,
+            params_per_segment: AUTO_PARAMS_PER_SEGMENT,
             cancel_check_every: DEFAULT_CANCEL_CHECK_EVERY,
         }
     }
@@ -36,13 +36,6 @@ impl Default for BinSegConfig {
 impl BinSegConfig {
     fn validate(&self) -> Result<(), CpdError> {
         validate_stopping(&self.stopping)?;
-
-        if self.params_per_segment == 0 {
-            return Err(CpdError::invalid_input(
-                "BinSegConfig.params_per_segment must be >= 1; got 0",
-            ));
-        }
-
         Ok(())
     }
 
@@ -115,13 +108,19 @@ fn resolve_penalty_params<C: CostModel>(
 ) -> (usize, &'static str) {
     match penalty {
         Penalty::BIC | Penalty::AIC => {
-            if configured_params_per_segment == DEFAULT_PARAMS_PER_SEGMENT {
-                (model.penalty_params_per_segment(), "model_default")
+            if configured_params_per_segment == AUTO_PARAMS_PER_SEGMENT {
+                (model.penalty_params_per_segment(), "model_default_auto")
             } else {
                 (configured_params_per_segment, "config_override")
             }
         }
-        Penalty::Manual(_) => (configured_params_per_segment, "config"),
+        Penalty::Manual(_) => {
+            if configured_params_per_segment == AUTO_PARAMS_PER_SEGMENT {
+                (model.penalty_params_per_segment(), "model_default_auto")
+            } else {
+                (configured_params_per_segment, "config")
+            }
+        }
     }
 }
 
@@ -682,22 +681,12 @@ mod tests {
     fn config_defaults_and_validation() {
         let default_cfg = BinSegConfig::default();
         assert_eq!(default_cfg.stopping, Stopping::Penalized(Penalty::BIC));
-        assert_eq!(default_cfg.params_per_segment, 2);
+        assert_eq!(default_cfg.params_per_segment, 0);
         assert_eq!(default_cfg.cancel_check_every, 1000);
 
         let ok = BinSeg::new(CostL2Mean::default(), default_cfg.clone())
             .expect("default config should be valid");
         assert_eq!(ok.config(), &default_cfg);
-
-        let err = BinSeg::new(
-            CostL2Mean::default(),
-            BinSegConfig {
-                params_per_segment: 0,
-                ..default_cfg
-            },
-        )
-        .expect_err("params_per_segment=0 must fail");
-        assert!(err.to_string().contains("params_per_segment"));
     }
 
     #[test]
@@ -820,6 +809,64 @@ mod tests {
         let ctx = ExecutionContext::new(&constraints);
         let result = detector.detect(&view, &ctx).expect("detect should succeed");
         assert_eq!(result.breakpoints, vec![10, 20]);
+    }
+
+    #[test]
+    fn bic_auto_params_use_model_default_and_allow_explicit_override() {
+        let values = vec![
+            -1.0, -1.0, -1.0, -1.0, 6.0, 6.0, 6.0, 6.0, -4.0, -4.0, -4.0, -4.0,
+        ];
+        let view = make_f64_view(
+            &values,
+            values.len(),
+            1,
+            MemoryLayout::CContiguous,
+            MissingPolicy::Error,
+        );
+        let constraints = Constraints {
+            min_segment_len: 2,
+            ..Constraints::default()
+        };
+        let ctx = ExecutionContext::new(&constraints);
+
+        let auto_detector = BinSeg::new(
+            CostNormalMeanVar::default(),
+            BinSegConfig {
+                stopping: Stopping::Penalized(Penalty::BIC),
+                ..BinSegConfig::default()
+            },
+        )
+        .expect("auto config should be valid");
+        let auto_result = auto_detector
+            .detect(&view, &ctx)
+            .expect("auto BIC should detect");
+        assert!(
+            auto_result
+                .diagnostics
+                .notes
+                .iter()
+                .any(|note| note.contains("params_per_segment=3 (model_default_auto)"))
+        );
+
+        let explicit_detector = BinSeg::new(
+            CostNormalMeanVar::default(),
+            BinSegConfig {
+                stopping: Stopping::Penalized(Penalty::BIC),
+                params_per_segment: 2,
+                cancel_check_every: 8,
+            },
+        )
+        .expect("explicit config should be valid");
+        let explicit_result = explicit_detector
+            .detect(&view, &ctx)
+            .expect("explicit BIC should detect");
+        assert!(
+            explicit_result
+                .diagnostics
+                .notes
+                .iter()
+                .any(|note| note.contains("params_per_segment=2 (config_override)"))
+        );
     }
 
     #[test]
