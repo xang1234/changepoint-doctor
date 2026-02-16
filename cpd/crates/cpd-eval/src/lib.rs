@@ -25,11 +25,23 @@ pub struct OfflineMetrics {
 }
 
 /// Computes offline evaluation metrics from detected and true segmentation outputs.
+///
+/// Returns an error when exactly one side has no change points, because
+/// Hausdorff distance and annotation error are undefined for that case.
 pub fn offline_metrics(
     detected: &OfflineChangePointResult,
     truth: &OfflineChangePointResult,
     tolerance: usize,
 ) -> Result<OfflineMetrics, CpdError> {
+    validate_pair(detected, truth)?;
+    let detected_cp = detected.change_points.as_slice();
+    let truth_cp = truth.change_points.as_slice();
+    if exactly_one_empty(detected_cp, truth_cp) {
+        return Err(CpdError::invalid_input(
+            "offline metrics are undefined when exactly one change-point set is empty",
+        ));
+    }
+
     Ok(OfflineMetrics {
         f1: f1_with_tolerance(detected, truth, tolerance)?,
         hausdorff_distance: hausdorff_distance(detected, truth)?,
@@ -105,7 +117,7 @@ pub fn hausdorff_distance(
     if detected_cp.is_empty() && truth_cp.is_empty() {
         return Ok(0.0);
     }
-    if detected_cp.is_empty() || truth_cp.is_empty() {
+    if exactly_one_empty(detected_cp, truth_cp) {
         return Err(CpdError::invalid_input(
             "hausdorff distance is undefined when exactly one change-point set is empty",
         ));
@@ -157,7 +169,7 @@ pub fn annotation_error(
     if detected_cp.is_empty() {
         return Ok(0.0);
     }
-    if truth_cp.is_empty() {
+    if exactly_one_empty(detected_cp, truth_cp) {
         return Err(CpdError::invalid_input(
             "annotation error is undefined when true change-point set is empty and detected set is non-empty",
         ));
@@ -196,6 +208,10 @@ fn validate_result(result: &OfflineChangePointResult, label: &str) -> Result<usi
         ))
     })?;
     Ok(inferred_n)
+}
+
+fn exactly_one_empty(a: &[usize], b: &[usize]) -> bool {
+    a.is_empty() != b.is_empty()
 }
 
 fn count_tolerance_matches(detected: &[usize], truth: &[usize], tolerance: usize) -> usize {
@@ -415,6 +431,16 @@ mod tests {
         assert_approx_eq(metrics.hausdorff_distance, 2.0);
         assert_approx_eq(metrics.rand_index, 4.0 / 7.0);
         assert_approx_eq(metrics.annotation_error, 2.0);
+    }
+
+    #[test]
+    fn offline_metrics_rejects_one_sided_empty_change_sets() {
+        let detected = result(100, &[25, 100]);
+        let truth = result(100, &[100]);
+
+        let err = offline_metrics(&detected, &truth, 3)
+            .expect_err("one-sided empty set should be rejected");
+        assert!(err.to_string().contains("offline metrics are undefined"));
     }
 
     #[test]
