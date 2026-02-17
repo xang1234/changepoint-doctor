@@ -87,18 +87,38 @@ x = np.concatenate([
     np.full(50, -2.0, dtype=np.float64),
 ])
 
-result = cpd.Pelt(model="l2", min_segment_len=2).fit(x).predict(n_bkps=2)
+outputs = [
+    cpd.Pelt(model="l2", min_segment_len=2).fit(x).predict(n_bkps=2),
+    cpd.Binseg(model="l2", min_segment_len=2).fit(x).predict(n_bkps=2),
+    cpd.Fpop(min_segment_len=2).fit(x).predict(n_bkps=2),
+    cpd.detect_offline(
+        x,
+        detector="pelt",
+        cost="l2",
+        constraints={"min_segment_len": 2},
+        stopping={"n_bkps": 2},
+    ),
+]
 
-payload = result.to_json()
-restored = cpd.OfflineChangePointResult.from_json(payload)
-assert restored.breakpoints == result.breakpoints
+for result in outputs:
+    payload = result.to_json()
+    restored = cpd.OfflineChangePointResult.from_json(payload)
+    assert restored.breakpoints == result.breakpoints
+    assert restored.change_points == result.change_points
 
 try:
-    fig = restored.plot(x, title="Quickstart breakpoint view")
+    fig = outputs[0].plot(x, title="Quickstart breakpoint view")
 except ImportError:
     # Plotting is optional; install with `python -m pip install matplotlib`.
     fig = None
 ```
+
+Compatibility + limitations to keep in mind:
+
+- `from_json(...)` accepts schema markers in the supported window (currently `1..=2`).
+- `to_json()` emits the current writer marker (currently `1`).
+- `plot()` is optional (`matplotlib`) and `plot(ax=...)` is univariate-only.
+- If `segments` are absent in a result, pass explicit `values` to `plot(...)`.
 
 ## 5. Run provided examples
 
@@ -107,3 +127,6 @@ cpd/python/.venv/bin/python cpd/python/examples/synthetic_signal.py
 cpd/python/.venv/bin/python cpd/python/examples/csv_detect.py --csv /path/to/data.csv --column 0
 cpd/python/.venv/bin/python cpd/python/examples/plot_breakpoints.py --out /tmp/cpd_breakpoints.png
 ```
+
+Example scripts are exercised in CI/smoke coverage via
+`cpd/python/tests/test_integration_mvp_a.py`.

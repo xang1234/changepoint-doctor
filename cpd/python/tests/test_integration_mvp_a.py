@@ -1,9 +1,19 @@
-import numpy as np
-import pytest
+import importlib.util
+import json
+from pathlib import Path
+import sys
 import threading
 import time
+from types import ModuleType
+
+import numpy as np
+import pytest
 
 import cpd
+
+CPD_ROOT = Path(__file__).resolve().parents[2]
+EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+MIGRATION_RESULT_FIXTURE_DIR = CPD_ROOT / "tests" / "fixtures" / "migrations" / "result"
 
 
 def _three_regime_signal() -> np.ndarray:
@@ -14,6 +24,78 @@ def _three_regime_signal() -> np.ndarray:
             np.full(40, -4.0, dtype=np.float64),
         ]
     )
+
+
+def _load_example_module(script_name: str) -> ModuleType:
+    script_path = EXAMPLES_DIR / f"{script_name}.py"
+    spec = importlib.util.spec_from_file_location(f"cpd_example_{script_name}", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_fixture_payload(fixture_name: str) -> str:
+    return (MIGRATION_RESULT_FIXTURE_DIR / fixture_name).read_text(encoding="utf-8")
+
+
+class _FakeAxis:
+    def __init__(self) -> None:
+        self.figure = None
+
+    def plot(self, _y, **_kwargs) -> None:
+        return None
+
+    def axvline(self, _x, **_kwargs) -> None:
+        return None
+
+    def set_title(self, _title) -> None:
+        return None
+
+    def set_ylabel(self, _label) -> None:
+        return None
+
+    def set_xlabel(self, _label) -> None:
+        return None
+
+    def legend(self, *_args, **_kwargs) -> None:
+        return None
+
+
+class _FakeFigure:
+    def __init__(self) -> None:
+        self.axes = []
+
+    def tight_layout(self) -> None:
+        return None
+
+    def savefig(self, out_path, **_kwargs) -> None:
+        Path(out_path).write_bytes(b"fake-png")
+
+
+def _install_fake_matplotlib(monkeypatch: pytest.MonkeyPatch) -> None:
+    pyplot = ModuleType("matplotlib.pyplot")
+
+    def _subplots(rows: int, cols: int = 1, **_kwargs):
+        fig = _FakeFigure()
+        axes_grid = np.empty((rows, cols), dtype=object)
+        for row in range(rows):
+            for col in range(cols):
+                axis = _FakeAxis()
+                axis.figure = fig
+                axes_grid[row, col] = axis
+                fig.axes.append(axis)
+        return fig, axes_grid
+
+    pyplot.subplots = _subplots  # type: ignore[attr-defined]
+
+    matplotlib = ModuleType("matplotlib")
+    matplotlib.use = lambda _backend: None  # type: ignore[attr-defined]
+    matplotlib.pyplot = pyplot  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "matplotlib", matplotlib)
+    monkeypatch.setitem(sys.modules, "matplotlib.pyplot", pyplot)
 
 
 def test_import_surface_exposes_mvp_a_api() -> None:
@@ -71,6 +153,92 @@ def test_detect_offline_matches_class_api_for_pelt_binseg_and_fpop() -> None:
     assert pelt_low.breakpoints == pelt_class.breakpoints
     assert binseg_low.breakpoints == binseg_class.breakpoints
     assert fpop_low.breakpoints == fpop_class.breakpoints
+
+
+def test_detector_outputs_roundtrip_through_result_json_api() -> None:
+    x = _three_regime_signal()
+    outputs = [
+        cpd.Pelt(model="l2", min_segment_len=2).fit(x).predict(n_bkps=2),
+        cpd.Binseg(model="l2", min_segment_len=2).fit(x).predict(n_bkps=2),
+        cpd.Fpop(min_segment_len=2).fit(x).predict(n_bkps=2),
+        cpd.detect_offline(
+            x,
+            detector="pelt",
+            cost="l2",
+            constraints={"min_segment_len": 2},
+            stopping={"n_bkps": 2},
+            repro_mode="balanced",
+        ),
+    ]
+
+    for result in outputs:
+        payload = result.to_json()
+        decoded = json.loads(payload)
+        restored = cpd.OfflineChangePointResult.from_json(payload)
+
+        assert restored.breakpoints == result.breakpoints
+        assert restored.change_points == result.change_points
+        assert restored.diagnostics.algorithm == decoded["diagnostics"]["algorithm"]
+        assert decoded["diagnostics"]["schema_version"] >= 1
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_schema_version"),
+    [
+        ("offline_result.v1.json", 1),
+        ("offline_result.v2.additive.json", 2),
+    ],
+)
+def test_result_json_backcompat_fixtures_parse_in_python_api(
+    fixture_name: str, expected_schema_version: int
+) -> None:
+    payload = _load_fixture_payload(fixture_name)
+    fixture = json.loads(payload)
+    parsed = cpd.OfflineChangePointResult.from_json(payload)
+
+    assert parsed.breakpoints == fixture["breakpoints"]
+    assert parsed.change_points == fixture["change_points"]
+    assert parsed.diagnostics.schema_version == expected_schema_version
+
+
+def test_additive_fixture_unknown_fields_roundtrip_through_python_api() -> None:
+    parsed = cpd.OfflineChangePointResult.from_json(
+        _load_fixture_payload("offline_result.v2.additive.json")
+    )
+    roundtrip = json.loads(parsed.to_json())
+
+    assert roundtrip["future_result_flag"] == "additive-v2"
+    assert roundtrip["diagnostics"]["future_diagnostics_flag"]["source"] == "v2"
+
+
+def test_examples_synthetic_and_csv_run_integration_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    synthetic_signal = _load_example_module("synthetic_signal")
+    csv_detect = _load_example_module("csv_detect")
+
+    assert synthetic_signal.main() == 0
+
+    csv_path = tmp_path / "signal.csv"
+    np.savetxt(csv_path, _three_regime_signal(), delimiter=",")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["csv_detect.py", "--csv", str(csv_path), "--column", "0", "--n-bkps", "2"],
+    )
+    assert csv_detect.main() == 0
+
+
+def test_plot_example_runs_with_fake_matplotlib(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_fake_matplotlib(monkeypatch)
+    plot_breakpoints = _load_example_module("plot_breakpoints")
+
+    out_path = tmp_path / "plot.png"
+    monkeypatch.setattr(sys, "argv", ["plot_breakpoints.py", "--out", str(out_path)])
+    assert plot_breakpoints.main() == 0
+    assert out_path.is_file()
 
 
 def test_detect_offline_accepts_pipeline_spec() -> None:

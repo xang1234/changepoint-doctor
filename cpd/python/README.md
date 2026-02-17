@@ -90,7 +90,7 @@ In `0.x`, schema compatibility follows the bounded version window documented in
 [`../VERSIONING.md`](../VERSIONING.md): readers accept only supported
 schema-marker versions (currently `1..=2` for offline result fixtures).
 
-Minimal example:
+Serialization + plotting workflow:
 
 ```python
 import numpy as np
@@ -137,6 +137,21 @@ except ImportError:
     # Install with: python -m pip install matplotlib
     fig = None
 ```
+
+Compatibility + limitations:
+
+- `from_json(...)` accepts only supported schema markers (`diagnostics.schema_version`,
+  currently `1..=2` in `0.x`).
+- `to_json()` writes the current schema marker (currently `1`) and preserves additive
+  unknown fields when round-tripping payloads.
+- `plot()` requires optional `matplotlib`.
+- `plot(values=None, ...)` requires per-segment summaries in the result; if segments
+  are unavailable, pass explicit `values`.
+- `plot(ax=...)` is supported only for univariate data (`diagnostics.d == 1`).
+
+These paths are smoke-tested in CI in
+[`tests/test_integration_mvp_a.py`](./tests/test_integration_mvp_a.py), including
+fixture compatibility checks and example-script execution.
 
 ## Stopping and Penalty Guide
 
