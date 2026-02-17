@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 cpd-core = { path = "../crates/cpd-core" }
 cpd-costs = { path = "../crates/cpd-costs" }
 cpd-offline = { path = "../crates/cpd-offline" }
+cpd-online = { path = "../crates/cpd-online" }
 cpd_python = { package = "cpd-python", path = "../crates/cpd-python", features = ["fuzzing"] }
 pyo3 = { version = "0.24.1", features = ["auto-initialize"] }
 
@@ -39,6 +40,13 @@ bench = false
 [[bin]]
 name = "numpy_interop_no_panic"
 path = "fuzz_targets/numpy_interop_no_panic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "online_bocpd_update_no_panic"
+path = "fuzz_targets/online_bocpd_update_no_panic.rs"
 test = false
 doc = false
 bench = false

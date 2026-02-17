@@ -11,6 +11,7 @@ Current targets:
 - `timeseries_view_no_panic`
 - `cost_segment_cost_no_panic`
 - `offline_detectors_no_panic`
+- `online_bocpd_update_no_panic`
 - `numpy_interop_no_panic`
 
 `offline_detectors_no_panic` currently exercises offline detector paths for:
@@ -34,6 +35,7 @@ Run from `cpd/fuzz`:
 cargo fuzz run timeseries_view_no_panic -- -max_total_time=60
 cargo fuzz run cost_segment_cost_no_panic -- -max_total_time=60
 cargo fuzz run offline_detectors_no_panic -- -max_total_time=60
+cargo fuzz run online_bocpd_update_no_panic -- -max_total_time=60
 cargo fuzz run numpy_interop_no_panic -- -max_total_time=60
 ```
 
@@ -70,7 +72,7 @@ Then:
 
 ## CI Policy
 
-Nightly CI runs all four active targets for 900 seconds each (3600 seconds total).
+Nightly CI runs all five active targets for 900 seconds each (4500 seconds total).
 
 If a nightly fuzz job fails:
 
