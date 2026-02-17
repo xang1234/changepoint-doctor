@@ -622,6 +622,46 @@ mod tests {
         m * var.ln()
     }
 
+    fn levinson_durbin_reference(autocov: &[f64]) -> Vec<f64> {
+        let order = autocov.len().saturating_sub(1);
+        if order == 0 {
+            return Vec::new();
+        }
+
+        let mut coeffs = vec![0.0; order];
+        let mut prediction_err = autocov[0].max(0.0);
+        let stability_tol = 32.0 * f64::EPSILON * prediction_err.abs().max(1.0);
+
+        for k in 0..order {
+            if prediction_err <= stability_tol {
+                break;
+            }
+
+            let mut reflection = autocov[k + 1];
+            for j in 0..k {
+                reflection -= coeffs[j] * autocov[k - j];
+            }
+            reflection /= prediction_err;
+            if !reflection.is_finite() {
+                break;
+            }
+            if reflection.abs() >= 1.0 {
+                reflection = reflection.signum() * (1.0 - 1e-12);
+            }
+
+            let mut next = coeffs.clone();
+            for j in 0..k {
+                next[j] = coeffs[j] - reflection * coeffs[k - 1 - j];
+            }
+            next[k] = reflection;
+            coeffs = next;
+
+            prediction_err *= (1.0 - reflection * reflection).max(1e-12);
+        }
+
+        coeffs
+    }
+
     fn naive_arp_yule_walker_univariate(
         values: &[f64],
         start: usize,
@@ -649,7 +689,7 @@ mod tests {
             autocov[lag] = sum / m;
         }
 
-        let coeffs = super::levinson_durbin(&autocov);
+        let coeffs = levinson_durbin_reference(&autocov);
         let intercept = mean * (1.0 - coeffs.iter().sum::<f64>());
         let mut sse = 0.0;
 
@@ -661,7 +701,6 @@ mod tests {
             let residual = segment[t] - pred;
             sse += residual * residual;
         }
-
         let var = normalize_variance(sse / m);
         m * var.ln()
     }
