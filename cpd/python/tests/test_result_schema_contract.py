@@ -34,16 +34,16 @@ def _load_json(path: Path) -> dict:
 def test_result_schema_declares_required_contract_fields() -> None:
     schema = _load_json(RESULT_SCHEMA_PATH)
 
-    assert schema["required"] == ["breakpoints", "change_points", "diagnostics"]
+    assert set(schema["required"]) == {"breakpoints", "change_points", "diagnostics"}
     diagnostics = schema["$defs"]["diagnostics"]
-    assert diagnostics["required"] == [
+    assert set(diagnostics["required"]) == {
         "n",
         "d",
         "schema_version",
         "algorithm",
         "cost_model",
         "repro_mode",
-    ]
+    }
 
 
 def test_migration_fixtures_cover_current_and_additive_compatibility() -> None:
@@ -67,4 +67,3 @@ def test_python_result_fixture_matches_canonical_v1_fixture() -> None:
     migration_v1 = _load_json(RESULT_V1_FIXTURE_PATH)
 
     assert python_v1 == migration_v1
-

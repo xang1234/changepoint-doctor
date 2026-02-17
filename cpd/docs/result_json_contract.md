@@ -6,11 +6,11 @@ This document defines the stable JSON contract for
 ## Canonical Schema + Version Marker
 
 - Canonical JSON schema:
-  `/Users/admin/Documents/Work/claude-doctor-changepoint/cpd/schemas/result/offline_change_point_result.v1.schema.json`
+  `cpd/schemas/result/offline_change_point_result.v1.schema.json`
 - Canonical schema marker in `0.x` payloads: `diagnostics.schema_version`
 - Current writer version: `1`
-- Reader compatibility window: `1..=2` (N and additive N-1/N+1 policy in
-  `0.x`), enforced by `cpd-core` schema migration helpers.
+- Reader compatibility window: `1..=2` (current + additive forward-compatible
+  fixture window in `0.x`), enforced by `cpd-core` schema migration helpers.
 
 ## Top-Level Field Contract
 
@@ -57,10 +57,11 @@ Optional diagnostics fields:
 When bumping schema versions:
 
 1. Add migration notes using
-   `/Users/admin/Documents/Work/claude-doctor-changepoint/cpd/docs/templates/schema_migration.md`.
+   `cpd/docs/templates/schema_migration.md`.
 2. Add/refresh fixtures in
-   `/Users/admin/Documents/Work/claude-doctor-changepoint/cpd/tests/fixtures/migrations/result/`.
-3. Keep N-1 compatibility tests green in `cpd-core` and Python contract tests.
+   `cpd/tests/fixtures/migrations/result/`.
+3. Keep compatibility-window tests green in `cpd-core` and Python contract
+   tests.
 
 ## Validation Failure + Error Messaging Contract
 
@@ -87,9 +88,9 @@ artifact/field identifiers intact for user debugging.
 
 Canonical fixtures for migration and compatibility checks:
 
-- Current: `/Users/admin/Documents/Work/claude-doctor-changepoint/cpd/tests/fixtures/migrations/result/offline_result.v1.json`
-- Additive compatibility: `/Users/admin/Documents/Work/claude-doctor-changepoint/cpd/tests/fixtures/migrations/result/offline_result.v2.additive.json`
+- Current: `cpd/tests/fixtures/migrations/result/offline_result.v1.json`
+- Additive compatibility:
+  `cpd/tests/fixtures/migrations/result/offline_result.v2.additive.json`
 - Diagnostics-only fixtures:
-  - `/Users/admin/Documents/Work/claude-doctor-changepoint/cpd/tests/fixtures/migrations/result/diagnostics.v1.json`
-  - `/Users/admin/Documents/Work/claude-doctor-changepoint/cpd/tests/fixtures/migrations/result/diagnostics.v2.additive.json`
-
+  - `cpd/tests/fixtures/migrations/result/diagnostics.v1.json`
+  - `cpd/tests/fixtures/migrations/result/diagnostics.v2.additive.json`

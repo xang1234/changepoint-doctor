@@ -84,9 +84,9 @@ see [`../docs/reproducibility_modes.md`](../docs/reproducibility_modes.md).
 [`../docs/result_json_contract.md`](../docs/result_json_contract.md), with the
 canonical schema marker at `diagnostics.schema_version`.
 
-In `0.x`, schema compatibility follows the N-1 policy from
-[`../VERSIONING.md`](../VERSIONING.md): readers accept current and additive
-forward-compatible payloads within the supported version window.
+In `0.x`, schema compatibility follows the bounded version window documented in
+[`../VERSIONING.md`](../VERSIONING.md): readers accept only supported
+schema-marker versions (currently `1..=2` for offline result fixtures).
 
 Minimal example:
 

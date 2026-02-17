@@ -82,8 +82,12 @@ Parameter defaults and validation semantics:
 
 ## N-1 Read Compatibility Policy
 
-- Readers must accept the current schema version `N` and previous schema version
-  `N-1`.
+- Default compatibility target is N-1: readers accept current schema version
+  `N` and previous schema version `N-1`.
+- During `0.x`, runtime migration helpers may also allow a bounded additive
+  forward-compatible window when explicitly documented and fixture-tested.
+- Current offline result/config window is `1..=2` (see
+  `cpd-core::CURRENT_SCHEMA_VERSION..=MAX_FORWARD_COMPAT_SCHEMA_VERSION`).
 - This issue establishes the policy and CI fixtures; runtime migration shims for
   future schema bumps are tracked as follow-up implementation work.
 - Offline result compatibility fixtures live under:
