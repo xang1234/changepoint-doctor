@@ -22,9 +22,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/xang1234/dr-changepoint"
-Repository = "https://github.com/xang1234/dr-changepoint"
-Issues = "https://github.com/xang1234/dr-changepoint/issues"
+Homepage = "https://github.com/xang1234/changepoint-doctor"
+Repository = "https://github.com/xang1234/changepoint-doctor"
+Issues = "https://github.com/xang1234/changepoint-doctor/issues"
 
 [tool.maturin]
 bindings = "pyo3"
