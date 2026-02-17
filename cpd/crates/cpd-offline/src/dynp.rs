@@ -712,7 +712,7 @@ mod tests {
     use crate::{Pelt, PeltConfig};
     use cpd_core::{
         Constraints, DTypeView, ExecutionContext, MemoryLayout, MissingPolicy, OfflineDetector,
-        Penalty, Stopping, TimeIndex, TimeSeriesView,
+        Penalty, ReproMode, Stopping, TimeIndex, TimeSeriesView,
     };
     use cpd_costs::{CostL2Mean, CostNormalMeanVar};
 
@@ -781,6 +781,95 @@ mod tests {
             .detect(&view, &ctx)
             .expect("dynp detect should succeed");
         assert_eq!(result.breakpoints, vec![4, 8, 12]);
+    }
+
+    #[test]
+    fn known_k_zero_reports_clear_error() {
+        let err = Dynp::new(
+            CostL2Mean::default(),
+            DynpConfig {
+                stopping: Stopping::KnownK(0),
+                cancel_check_every: 4,
+            },
+        )
+        .expect_err("k=0 should be rejected during config validation");
+        assert!(err.to_string().contains("k >= 1"));
+    }
+
+    #[test]
+    fn known_k_greater_than_n_reports_clear_error() {
+        let detector = Dynp::new(
+            CostL2Mean::default(),
+            DynpConfig {
+                stopping: Stopping::KnownK(6),
+                cancel_check_every: 4,
+            },
+        )
+        .expect("config should be valid");
+
+        let values = vec![0.0, 0.0, 10.0, 10.0, -3.0, -3.0];
+        let view = make_f64_view(
+            &values,
+            values.len(),
+            1,
+            MemoryLayout::CContiguous,
+            MissingPolicy::Error,
+        );
+
+        let constraints = constraints_with_min_segment_len(1);
+        let ctx = ExecutionContext::new(&constraints);
+        let err = detector
+            .detect(&view, &ctx)
+            .expect_err("k>=n should be unreachable");
+
+        let message = err.to_string();
+        assert!(message.contains("KnownK exact solution unreachable"));
+        assert!(message.contains("requested k=6"));
+    }
+
+    #[test]
+    fn known_k_tie_breaking_is_deterministic_across_repro_modes() {
+        let detector = Dynp::new(
+            CostL2Mean::default(),
+            DynpConfig {
+                stopping: Stopping::KnownK(1),
+                cancel_check_every: 4,
+            },
+        )
+        .expect("config should be valid");
+
+        let values = vec![5.0; 8];
+        let view = make_f64_view(
+            &values,
+            values.len(),
+            1,
+            MemoryLayout::CContiguous,
+            MissingPolicy::Error,
+        );
+        let constraints = constraints_with_min_segment_len(2);
+
+        let balanced_result = detector
+            .detect(
+                &view,
+                &ExecutionContext::new(&constraints).with_repro_mode(ReproMode::Balanced),
+            )
+            .expect("balanced mode should succeed");
+        let fast_result = detector
+            .detect(
+                &view,
+                &ExecutionContext::new(&constraints).with_repro_mode(ReproMode::Fast),
+            )
+            .expect("fast mode should succeed");
+        let strict_result = detector
+            .detect(
+                &view,
+                &ExecutionContext::new(&constraints).with_repro_mode(ReproMode::Strict),
+            )
+            .expect("strict mode should succeed");
+
+        assert_eq!(balanced_result.breakpoints, vec![2, 8]);
+        assert_eq!(fast_result.breakpoints, balanced_result.breakpoints);
+        assert_eq!(strict_result.breakpoints, balanced_result.breakpoints);
     }
 
     #[test]
