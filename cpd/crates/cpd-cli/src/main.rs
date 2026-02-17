@@ -37,6 +37,7 @@ struct DetectArgs {
     algorithm: AlgorithmArg,
     cost: CostArg,
     penalty: PenaltyArg,
+    penalty_explicit: bool,
     penalty_value: Option<f64>,
     k: Option<usize>,
     seed: Option<u64>,
@@ -54,6 +55,7 @@ impl Default for DetectArgs {
             algorithm: AlgorithmArg::Pelt,
             cost: CostArg::L2,
             penalty: PenaltyArg::Bic,
+            penalty_explicit: false,
             penalty_value: None,
             k: None,
             seed: None,
@@ -562,6 +564,7 @@ fn parse_detect_args(tokens: &[String]) -> Result<DetectArgs, CliError> {
             "--penalty" => {
                 let raw = take_flag_value(flag, inline_value, tokens, &mut idx)?;
                 args.penalty = PenaltyArg::parse(raw.as_str())?;
+                args.penalty_explicit = true;
             }
             "--penalty-value" => {
                 let raw = take_flag_value(flag, inline_value, tokens, &mut idx)?;
@@ -993,7 +996,12 @@ fn handle_eval(args: EvalArgs) -> Result<(), CliError> {
 }
 
 fn build_detect_pipeline(args: &DetectArgs) -> Result<PipelineSpec, CliError> {
-    let stopping = resolve_stopping(args.k, args.penalty, args.penalty_value)?;
+    let stopping = resolve_stopping(
+        args.k,
+        args.penalty,
+        args.penalty_explicit,
+        args.penalty_value,
+    )?;
     let constraints = constraints_from_detect_args(args);
 
     let detector = match args.algorithm {
@@ -1049,11 +1057,17 @@ fn build_detect_pipeline(args: &DetectArgs) -> Result<PipelineSpec, CliError> {
 fn resolve_stopping(
     k: Option<usize>,
     penalty: PenaltyArg,
+    penalty_explicit: bool,
     penalty_value: Option<f64>,
 ) -> Result<Stopping, CliError> {
     if let Some(k_value) = k {
         if k_value == 0 {
             return Err(CliError::invalid_input("--k must be >= 1 when provided"));
+        }
+        if penalty_explicit {
+            return Err(CliError::invalid_input(
+                "--penalty cannot be combined with --k",
+            ));
         }
         if penalty_value.is_some() {
             return Err(CliError::invalid_input(
@@ -1173,7 +1187,7 @@ fn parse_csv_data(raw: &str) -> Result<(Vec<f64>, usize, usize), CliError> {
     match parse_csv_rows(rows.as_slice()) {
         Ok(parsed) => Ok(parsed),
         Err(err) => {
-            if rows.len() > 1 {
+            if rows.len() > 1 && first_row_looks_like_header(rows[0], rows[1]) {
                 if let Ok(without_header) = parse_csv_rows(&rows[1..]) {
                     return Ok(without_header);
                 }
@@ -1234,6 +1248,24 @@ fn parse_csv_rows(rows: &[&str]) -> Result<(Vec<f64>, usize, usize), CliError> {
     let d = expected_cols.ok_or_else(|| CliError::invalid_input("CSV input is empty"))?;
     let n = rows.len();
     Ok((values, n, d))
+}
+
+fn first_row_looks_like_header(first_row: &str, second_row: &str) -> bool {
+    let first_cells = first_row.split(',').map(str::trim).collect::<Vec<_>>();
+    let second_cells = second_row.split(',').map(str::trim).collect::<Vec<_>>();
+
+    if first_cells.is_empty()
+        || first_cells.len() != second_cells.len()
+        || first_cells.iter().any(|cell| cell.is_empty())
+        || second_cells.iter().any(|cell| cell.is_empty())
+    {
+        return false;
+    }
+
+    let first_all_non_numeric = first_cells.iter().all(|cell| cell.parse::<f64>().is_err());
+    let second_all_numeric = second_cells.iter().all(|cell| cell.parse::<f64>().is_ok());
+
+    first_all_non_numeric && second_all_numeric
 }
 
 struct ParsedNpyHeader {
@@ -2269,7 +2301,10 @@ fn emit_structured_error(err: &CliError) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_csv_data, parse_npy_bytes, parse_pipeline_spec_document};
+    use super::{
+        parse_csv_data, parse_detect_args, parse_npy_bytes, parse_pipeline_spec_document,
+        resolve_stopping,
+    };
     use cpd_core::{Penalty, Stopping};
     use cpd_doctor::{CostConfig, DetectorConfig, OfflineDetectorConfig};
 
@@ -2289,6 +2324,16 @@ mod tests {
         assert_eq!(n, 2);
         assert_eq!(d, 2);
         assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn csv_parser_rejects_malformed_first_row_instead_of_dropping_it() {
+        let raw = "1,2,\n3.0,4.0\n5.0,6.0\n";
+        let err = parse_csv_data(raw).expect_err("malformed first data row should fail");
+        assert!(
+            err.to_string().contains("CSV row 1"),
+            "unexpected error message: {err}"
+        );
     }
 
     #[test]
@@ -2354,6 +2399,31 @@ mod tests {
             pipeline.stopping,
             Some(Stopping::Penalized(Penalty::BIC))
         ));
+    }
+
+    #[test]
+    fn detect_rejects_explicit_penalty_when_k_is_set() {
+        let tokens = vec![
+            "--input".to_string(),
+            "/tmp/series.csv".to_string(),
+            "--k".to_string(),
+            "2".to_string(),
+            "--penalty".to_string(),
+            "manual".to_string(),
+        ];
+        let args = parse_detect_args(tokens.as_slice()).expect("detect args should parse");
+        let err = resolve_stopping(
+            args.k,
+            args.penalty,
+            args.penalty_explicit,
+            args.penalty_value,
+        )
+        .expect_err("explicit penalty with --k should fail");
+        assert!(
+            err.to_string()
+                .contains("--penalty cannot be combined with --k"),
+            "unexpected error message: {err}"
+        );
     }
 
     fn make_npy_v1(descr: &str, fortran_order: bool, shape: &[usize], values: &[f64]) -> Vec<u8> {
