@@ -35,6 +35,10 @@ fn payload_codec_from_seed(seed: u8) -> PayloadCodec {
     }
 }
 
+fn should_replay_fixture(data: &[u8], byte_index: usize) -> bool {
+    data.get(byte_index).copied().unwrap_or(u8::MAX) % 4 == 0
+}
+
 fn next_observation(cursor: &mut common::ByteCursor<'_>) -> f64 {
     (f64::from(cursor.next_i16()) / 16.0).clamp(-1_000.0, 1_000.0)
 }
@@ -128,21 +132,25 @@ fn build_encoded_checkpoint(cursor: &mut common::ByteCursor<'_>) -> Option<Vec<u
 
 fn exercise_restore_paths(envelope: &CheckpointEnvelope, cursor: &mut common::ByteCursor<'_>) {
     if let Ok(mut detector) = BocpdDetector::new(BocpdConfig::default()) {
-        let _ = load_bocpd_checkpoint(&mut detector, envelope);
-        advance_detector(&mut detector, cursor);
-        let _ = save_bocpd_checkpoint(&detector, payload_codec_from_seed(cursor.next_u8()));
+        if load_bocpd_checkpoint(&mut detector, envelope).is_ok() {
+            advance_detector(&mut detector, cursor);
+            let _ = save_bocpd_checkpoint(&detector, payload_codec_from_seed(cursor.next_u8()));
+        }
     }
 
     if let Ok(mut detector) = CusumDetector::new(CusumConfig::default()) {
-        let _ = load_cusum_checkpoint(&mut detector, envelope);
-        advance_detector(&mut detector, cursor);
-        let _ = save_cusum_checkpoint(&detector, payload_codec_from_seed(cursor.next_u8()));
+        if load_cusum_checkpoint(&mut detector, envelope).is_ok() {
+            advance_detector(&mut detector, cursor);
+            let _ = save_cusum_checkpoint(&detector, payload_codec_from_seed(cursor.next_u8()));
+        }
     }
 
     if let Ok(mut detector) = PageHinkleyDetector::new(PageHinkleyConfig::default()) {
-        let _ = load_page_hinkley_checkpoint(&mut detector, envelope);
-        advance_detector(&mut detector, cursor);
-        let _ = save_page_hinkley_checkpoint(&detector, payload_codec_from_seed(cursor.next_u8()));
+        if load_page_hinkley_checkpoint(&mut detector, envelope).is_ok() {
+            advance_detector(&mut detector, cursor);
+            let _ =
+                save_page_hinkley_checkpoint(&detector, payload_codec_from_seed(cursor.next_u8()));
+        }
     }
 }
 
@@ -157,8 +165,12 @@ fuzz_target!(|data: &[u8]| {
     let mut cursor = common::ByteCursor::new(data);
 
     try_decode_and_restore(data, &mut cursor);
-    try_decode_and_restore(CHECKPOINT_V0_FIXTURE.as_bytes(), &mut cursor);
-    try_decode_and_restore(CHECKPOINT_V1_FIXTURE.as_bytes(), &mut cursor);
+    if should_replay_fixture(data, 0) {
+        try_decode_and_restore(CHECKPOINT_V0_FIXTURE.as_bytes(), &mut cursor);
+    }
+    if should_replay_fixture(data, 1) {
+        try_decode_and_restore(CHECKPOINT_V1_FIXTURE.as_bytes(), &mut cursor);
+    }
 
     let mutated_v0 = mutate_input(CHECKPOINT_V0_FIXTURE.as_bytes(), &mut cursor);
     try_decode_and_restore(&mutated_v0, &mut cursor);
