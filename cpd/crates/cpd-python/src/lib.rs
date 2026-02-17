@@ -16,7 +16,7 @@ use cpd_core::{
     OfflineChangePointResult as CoreOfflineChangePointResult, OfflineDetector, OnlineDetector,
     Penalty, ReproMode, Stopping, TimeSeriesView,
 };
-use cpd_costs::{CostL2Mean, CostNormalMeanVar};
+use cpd_costs::{CostL1Median, CostL2Mean, CostNormalMeanVar};
 use cpd_doctor::{
     CostConfig as DoctorCostConfig, DetectorConfig as DoctorDetectorConfig,
     OfflineDetectorConfig as DoctorOfflineDetectorConfig, PipelineSpec as DoctorPipelineSpec,
@@ -179,6 +179,7 @@ fn decode_checkpoint_input(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PyCostModel {
+    L1Median,
     L2,
     Normal,
 }
@@ -186,16 +187,18 @@ enum PyCostModel {
 impl PyCostModel {
     fn parse(model: &str) -> PyResult<Self> {
         match model.to_ascii_lowercase().as_str() {
+            "l1" | "l1_median" => Ok(Self::L1Median),
             "l2" => Ok(Self::L2),
             "normal" => Ok(Self::Normal),
             _ => Err(PyValueError::new_err(format!(
-                "unsupported model '{model}'; expected one of: 'l2', 'normal'"
+                "unsupported model '{model}'; expected one of: 'l1_median', 'l2', 'normal'"
             ))),
         }
     }
 
     fn cost_model_name(self) -> &'static str {
         match self {
+            Self::L1Median => "l1_median",
             Self::L2 => "l2",
             Self::Normal => "normal",
         }
@@ -1297,12 +1300,13 @@ fn parse_pipeline_cost(value: &Bound<'_, PyAny>) -> PyResult<DoctorCostConfig> {
         .extract::<String>()
         .map_err(|_| PyTypeError::new_err("pipeline.cost must be a string"))?;
     match raw.to_ascii_lowercase().as_str() {
+        "l1" | "l1_median" => Ok(DoctorCostConfig::L1Median),
         "l2" => Ok(DoctorCostConfig::L2),
         "normal" => Ok(DoctorCostConfig::Normal),
         "nig" => Ok(DoctorCostConfig::Nig),
         "none" => Ok(DoctorCostConfig::None),
         _ => Err(PyValueError::new_err(format!(
-            "unsupported pipeline.cost '{raw}'; expected one of: 'l2', 'normal', 'nig', 'none'"
+            "unsupported pipeline.cost '{raw}'; expected one of: 'l1_median', 'l2', 'normal', 'nig', 'none'"
         ))),
     }
 }
@@ -1333,7 +1337,7 @@ fn parse_pipeline_spec(pipeline: &Bound<'_, PyAny>) -> PyResult<DoctorPipelineSp
     };
     if matches!(cost, DoctorCostConfig::None) {
         return Err(PyValueError::new_err(
-            "detect_offline requires pipeline.cost to be one of: 'l2', 'normal', 'nig'",
+            "detect_offline requires pipeline.cost to be one of: 'l1_median', 'l2', 'normal', 'nig'",
         ));
     }
     let constraints = parse_constraints(dict.get_item("constraints")?.as_ref())?;
@@ -1597,6 +1601,15 @@ fn detect_with_view(
     let ctx = ExecutionContext::new(constraints).with_repro_mode(repro_mode);
 
     match (detector, model) {
+        (PyDetectorKind::Pelt, PyCostModel::L1Median) => {
+            let config = PeltConfig {
+                stopping,
+                params_per_segment: 2,
+                cancel_check_every: 1000,
+            };
+            let detector = OfflinePelt::new(CostL1Median::new(repro_mode), config)?;
+            detector.detect(view, &ctx)
+        }
         (PyDetectorKind::Pelt, PyCostModel::L2) => {
             let config = PeltConfig {
                 stopping,
@@ -1622,6 +1635,15 @@ fn detect_with_view(
                 cancel_check_every: 1000,
             };
             let detector = OfflineBinSeg::new(CostL2Mean::new(repro_mode), config)?;
+            detector.detect(view, &ctx)
+        }
+        (PyDetectorKind::Binseg, PyCostModel::L1Median) => {
+            let config = BinSegConfig {
+                stopping,
+                params_per_segment: 2,
+                cancel_check_every: 1000,
+            };
+            let detector = OfflineBinSeg::new(CostL1Median::new(repro_mode), config)?;
             detector.detect(view, &ctx)
         }
         (PyDetectorKind::Binseg, PyCostModel::Normal) => {

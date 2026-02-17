@@ -11,7 +11,7 @@ use cpd_core::{
     TimeSeriesView, penalty_value, validate_breakpoints, validate_constraints,
     validate_constraints_config,
 };
-use cpd_costs::{CostAR, CostL2Mean, CostModel, CostNIGMarginal, CostNormalMeanVar};
+use cpd_costs::{CostAR, CostL1Median, CostL2Mean, CostModel, CostNIGMarginal, CostNormalMeanVar};
 use cpd_offline::{BinSeg, BinSegConfig, Pelt, PeltConfig, Wbs, WbsConfig, WbsIntervalStrategy};
 use cpd_online::{
     BernoulliBetaPrior, BocpdConfig, CusumConfig, GaussianNigPrior, ObservationModel,
@@ -283,6 +283,7 @@ impl PipelineSpec {
             DetectorConfig::Offline(detector) => {
                 let cost = match self.cost {
                     CostConfig::Ar => OfflineCostKind::Ar,
+                    CostConfig::L1Median => OfflineCostKind::L1Median,
                     CostConfig::L2 => OfflineCostKind::L2,
                     CostConfig::Normal => OfflineCostKind::Normal,
                     CostConfig::Nig => OfflineCostKind::Nig,
@@ -467,6 +468,7 @@ pub enum OnlineDetectorKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CostConfig {
     Ar,
+    L1Median,
     L2,
     Normal,
     Nig,
@@ -477,6 +479,7 @@ impl From<OfflineCostKind> for CostConfig {
     fn from(value: OfflineCostKind) -> Self {
         match value {
             OfflineCostKind::Ar => Self::Ar,
+            OfflineCostKind::L1Median => Self::L1Median,
             OfflineCostKind::L2 => Self::L2,
             OfflineCostKind::Normal => Self::Normal,
             OfflineCostKind::Nig => Self::Nig,
@@ -508,6 +511,7 @@ pub enum OfflineDetectorConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OfflineCostKind {
     Ar,
+    L1Median,
     L2,
     Normal,
     Nig,
@@ -1212,6 +1216,12 @@ fn run_offline_pipeline_with_config(
         OfflineCostKind::Ar => {
             run_offline_detector_with_cost(detect_view, detector, &ctx, CostAR::new(1, repro_mode))
         }
+        OfflineCostKind::L1Median => run_offline_detector_with_cost(
+            detect_view,
+            detector,
+            &ctx,
+            CostL1Median::new(repro_mode),
+        ),
         OfflineCostKind::L2 => {
             run_offline_detector_with_cost(detect_view, detector, &ctx, CostL2Mean::new(repro_mode))
         }
@@ -2549,6 +2559,34 @@ fn build_offline_candidates(
         };
         push_candidate(candidate, out, seen);
     } else if flags.medium_n {
+        if flags.heavy_tail {
+            let candidate = Candidate {
+                pipeline: PipelineConfig::Offline {
+                    detector: OfflineDetectorConfig::BinSeg(BinSegConfig::default()),
+                    cost: OfflineCostKind::L1Median,
+                    constraints: base_constraints.clone(),
+                },
+                pipeline_id: format!("offline:binseg:l1_median:jump={}", base_constraints.jump),
+                warnings: vec![
+                    "CostL1Median is a slow path: O(m) median recomputation per segment (not O(1)); use for moderate n with heavy outlier contamination"
+                        .to_string(),
+                ],
+                primary_reason:
+                    "medium-n heavy-tail signal favors robust L1 median segment cost".to_string(),
+                driver_keys: vec!["kurtosis_proxy", "outlier_rate_iqr", "mad_to_std_ratio"],
+                profile: PerformanceProfile {
+                    speed: 0.38,
+                    accuracy: 0.74,
+                    robustness: 0.93,
+                },
+                family: CandidateFamily::StrongMapped,
+                supported_signals: vec![SignalKind::HeavyTail],
+                evidence_support: evidence_support(0.86, flags, false),
+                has_approximation_warning: false,
+            };
+            push_candidate(candidate, out, seen);
+        }
+
         if flags.few_strong_changes && flags.masking_risk {
             let mut wbs = WbsConfig::default();
             wbs.interval_strategy = WbsIntervalStrategy::Stratified;
@@ -2923,26 +2961,39 @@ fn apply_jump_thinning(base_constraints: &Constraints, n: usize, enabled: bool) 
 
 fn resource_estimate(pipeline: &PipelineConfig) -> ResourceEstimate {
     match pipeline {
-        PipelineConfig::Offline { detector, .. } => match detector {
-            OfflineDetectorConfig::Pelt(_) => ResourceEstimate {
-                time_complexity: "O(n) avg / O(n^2) worst".to_string(),
-                memory_complexity: "O(n)".to_string(),
-                relative_time_score: 0.45,
-                relative_memory_score: 0.40,
-            },
-            OfflineDetectorConfig::BinSeg(_) => ResourceEstimate {
-                time_complexity: "O(n log n)".to_string(),
-                memory_complexity: "O(n)".to_string(),
-                relative_time_score: 0.35,
-                relative_memory_score: 0.35,
-            },
-            OfflineDetectorConfig::Wbs(_) => ResourceEstimate {
-                time_complexity: "O(M*n)".to_string(),
-                memory_complexity: "O(n + M)".to_string(),
-                relative_time_score: 0.65,
-                relative_memory_score: 0.55,
-            },
-        },
+        PipelineConfig::Offline { detector, cost, .. } => {
+            if matches!(cost, OfflineCostKind::L1Median) {
+                return ResourceEstimate {
+                    time_complexity:
+                        "slow path: O(m) median per segment query (not O(1)); detector overhead applies"
+                            .to_string(),
+                    memory_complexity: "O(n)".to_string(),
+                    relative_time_score: 0.88,
+                    relative_memory_score: 0.45,
+                };
+            }
+
+            match detector {
+                OfflineDetectorConfig::Pelt(_) => ResourceEstimate {
+                    time_complexity: "O(n) avg / O(n^2) worst".to_string(),
+                    memory_complexity: "O(n)".to_string(),
+                    relative_time_score: 0.45,
+                    relative_memory_score: 0.40,
+                },
+                OfflineDetectorConfig::BinSeg(_) => ResourceEstimate {
+                    time_complexity: "O(n log n)".to_string(),
+                    memory_complexity: "O(n)".to_string(),
+                    relative_time_score: 0.35,
+                    relative_memory_score: 0.35,
+                },
+                OfflineDetectorConfig::Wbs(_) => ResourceEstimate {
+                    time_complexity: "O(M*n)".to_string(),
+                    memory_complexity: "O(n + M)".to_string(),
+                    relative_time_score: 0.65,
+                    relative_memory_score: 0.55,
+                },
+            }
+        }
         PipelineConfig::Online { detector } => match detector {
             OnlineDetectorConfig::Bocpd(_) => ResourceEstimate {
                 time_complexity: "O(W) per step".to_string(),
@@ -2978,14 +3029,17 @@ fn pipeline_label(pipeline: &PipelineConfig) -> &'static str {
     match pipeline {
         PipelineConfig::Offline { detector, cost, .. } => match (detector, cost) {
             (OfflineDetectorConfig::Pelt(_), OfflineCostKind::Ar) => "PELT + AR",
+            (OfflineDetectorConfig::Pelt(_), OfflineCostKind::L1Median) => "PELT + L1 median",
             (OfflineDetectorConfig::Pelt(_), OfflineCostKind::L2) => "PELT + L2",
             (OfflineDetectorConfig::Pelt(_), OfflineCostKind::Normal) => "PELT + Normal",
             (OfflineDetectorConfig::Pelt(_), OfflineCostKind::Nig) => "PELT + NIG",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Ar) => "BinSeg + AR",
+            (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::L1Median) => "BinSeg + L1 median",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Normal) => "BinSeg + Normal",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::L2) => "BinSeg + L2",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Nig) => "BinSeg + NIG",
             (OfflineDetectorConfig::Wbs(_), OfflineCostKind::Ar) => "WBS + AR",
+            (OfflineDetectorConfig::Wbs(_), OfflineCostKind::L1Median) => "WBS + L1 median",
             (OfflineDetectorConfig::Wbs(_), OfflineCostKind::L2) => "WBS + L2",
             (OfflineDetectorConfig::Wbs(_), OfflineCostKind::Normal) => "WBS + Normal",
             (OfflineDetectorConfig::Wbs(_), OfflineCostKind::Nig) => "WBS + NIG",
@@ -3187,6 +3241,7 @@ fn pipeline_id(pipeline: &PipelineConfig) -> String {
             };
             let cost_name = match cost {
                 OfflineCostKind::Ar => "ar",
+                OfflineCostKind::L1Median => "l1_median",
                 OfflineCostKind::L2 => "l2",
                 OfflineCostKind::Normal => "normal",
                 OfflineCostKind::Nig => "nig",
@@ -3311,6 +3366,7 @@ mod tests {
                 });
                 costs.insert(match cost {
                     OfflineCostKind::Ar => "ar",
+                    OfflineCostKind::L1Median => "l1_median",
                     OfflineCostKind::L2 => "l2",
                     OfflineCostKind::Normal => "normal",
                     OfflineCostKind::Nig => "nig",
@@ -3399,6 +3455,99 @@ mod tests {
             } => {}
             other => panic!("unexpected top recommendation: {other:?}"),
         }
+    }
+
+    #[test]
+    fn recommend_offline_medium_n_heavy_tail_prefers_l1_median_slow_path() {
+        let n = 20_000;
+        let mut state = 11_u64;
+        let mut values = Vec::with_capacity(n);
+        for idx in 0..n {
+            let mut v = pseudo_uniform_noise(&mut state);
+            if idx % 29 == 0 {
+                v *= 30.0;
+            }
+            values.push(v);
+        }
+
+        let view = make_univariate_view(&values);
+        let recommendations =
+            recommend(&view, Objective::Robustness, false, None, 0.20, true).expect("recommend");
+
+        assert!(!recommendations.is_empty());
+        let pipeline = recommendations[0]
+            .pipeline
+            .to_pipeline_config()
+            .expect("pipeline should convert");
+        match &pipeline {
+            PipelineConfig::Offline {
+                detector: OfflineDetectorConfig::BinSeg(_),
+                cost: OfflineCostKind::L1Median,
+                ..
+            } => {}
+            other => panic!("unexpected top recommendation: {other:?}"),
+        }
+        assert!(
+            recommendations[0]
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("slow path")),
+            "expected slow-path warning, got {:?}",
+            recommendations[0].warnings
+        );
+    }
+
+    #[test]
+    fn l1_median_detects_true_shift_when_l2_is_outlier_dominated() {
+        let n = 2_048;
+        let true_cp = n / 2;
+        let mut values = vec![0.0; n];
+        for item in values.iter_mut().take(n).skip(true_cp) {
+            *item = 3.0;
+        }
+        for item in values.iter_mut().take(325).skip(300) {
+            *item = 60.0;
+        }
+        let view = make_univariate_view(&values);
+
+        let detector = OfflineDetectorConfig::BinSeg(cpd_offline::BinSegConfig {
+            stopping: Stopping::KnownK(1),
+            params_per_segment: 2,
+            cancel_check_every: 1_000,
+        });
+        let constraints = Constraints {
+            min_segment_len: 16,
+            max_change_points: Some(1),
+            ..Constraints::default()
+        };
+
+        let l2_pipeline = PipelineSpec::from_pipeline_config(&PipelineConfig::Offline {
+            detector: detector.clone(),
+            cost: OfflineCostKind::L2,
+            constraints: constraints.clone(),
+        });
+        let l1_pipeline = PipelineSpec::from_pipeline_config(&PipelineConfig::Offline {
+            detector,
+            cost: OfflineCostKind::L1Median,
+            constraints,
+        });
+
+        let l2 = super::execute_pipeline_with_repro_mode(&view, &l2_pipeline, ReproMode::Balanced)
+            .expect("L2 pipeline should execute");
+        let l1 = super::execute_pipeline_with_repro_mode(&view, &l1_pipeline, ReproMode::Balanced)
+            .expect("L1 pipeline should execute");
+
+        let l2_cp = l2.breakpoints.first().copied().expect("L2 cp should exist");
+        let l1_cp = l1.breakpoints.first().copied().expect("L1 cp should exist");
+
+        assert!(
+            l1_cp.abs_diff(true_cp) <= 12,
+            "expected L1 cp near {true_cp}, got {l1_cp}"
+        );
+        assert!(
+            l2_cp.abs_diff(true_cp) >= 128,
+            "expected L2 cp to be materially displaced by outliers, got {l2_cp}"
+        );
     }
 
     #[test]
@@ -4143,6 +4292,26 @@ mod tests {
                 .expect("heavy recommendation");
         collect_offline_coverage(&heavy_recommendations, &mut detectors, &mut costs);
 
+        let mut medium_heavy = Vec::with_capacity(20_000);
+        for idx in 0..20_000 {
+            let mut v = pseudo_uniform_noise(&mut state);
+            if idx % 29 == 0 {
+                v *= 30.0;
+            }
+            medium_heavy.push(v);
+        }
+        let medium_heavy_view = make_univariate_view(&medium_heavy);
+        let medium_heavy_recommendations = recommend(
+            &medium_heavy_view,
+            Objective::Robustness,
+            false,
+            None,
+            0.20,
+            true,
+        )
+        .expect("medium heavy recommendation");
+        collect_offline_coverage(&medium_heavy_recommendations, &mut detectors, &mut costs);
+
         let mut masked_values = vec![0.0; 2_000];
         for item in masked_values.iter_mut().take(2_000).skip(1_000) {
             *item = 9.0;
@@ -4170,7 +4339,9 @@ mod tests {
         let expected_detectors = ["binseg", "pelt", "wbs"]
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let expected_costs = ["l2", "nig", "normal"].into_iter().collect::<BTreeSet<_>>();
+        let expected_costs = ["l1_median", "l2", "nig", "normal"]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
 
         assert_eq!(detectors, expected_detectors);
         assert_eq!(costs, expected_costs);

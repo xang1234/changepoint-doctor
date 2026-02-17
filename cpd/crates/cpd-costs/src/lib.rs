@@ -4,6 +4,7 @@
 
 pub mod ar;
 pub mod bernoulli;
+pub mod l1;
 pub mod l2;
 pub mod linear;
 pub mod model;
@@ -14,6 +15,7 @@ pub mod poisson;
 pub use ar::{ARCache, CostAR};
 pub use bernoulli::{BernoulliCache, CostBernoulli};
 pub use cpd_core::MissingSupport;
+pub use l1::{CostL1Median, L1MedianCache};
 pub use l2::{CostL2Mean, L2Cache};
 pub use linear::{CostLinear, LinearCache};
 pub use model::{CachedCost, CostModel};

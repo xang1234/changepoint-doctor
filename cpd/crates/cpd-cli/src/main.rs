@@ -130,6 +130,7 @@ enum AlgorithmArg {
 #[derive(Clone, Copy, Debug)]
 enum CostArg {
     Ar,
+    L1Median,
     L2,
     Normal,
     Nig,
@@ -167,11 +168,12 @@ impl CostArg {
     fn parse(raw: &str) -> Result<Self, CliError> {
         match raw.to_ascii_lowercase().as_str() {
             "ar" => Ok(Self::Ar),
+            "l1" | "l1_median" => Ok(Self::L1Median),
             "l2" => Ok(Self::L2),
             "normal" => Ok(Self::Normal),
             "nig" => Ok(Self::Nig),
             _ => Err(CliError::invalid_input(format!(
-                "invalid --cost '{raw}'; expected one of: ar, l2, normal, nig"
+                "invalid --cost '{raw}'; expected one of: ar, l1_median, l2, normal, nig"
             ))),
         }
     }
@@ -836,7 +838,7 @@ fn print_command_help(command: &str) -> Result<(), CliError> {
     match command {
         "detect" => {
             println!(
-                "USAGE:\n  cpd detect --input <path> [OPTIONS]\n\nOPTIONS:\n  --algorithm <pelt|binseg|wbs>      Default: pelt\n  --cost <ar|l2|normal|nig>          Default: l2\n  --penalty <bic|aic|manual>         Default: bic\n  --penalty-value <float>            Required when --penalty=manual\n  --k <usize>                        Use KnownK stopping\n  --seed <u64>                       WBS seed only\n  --min-segment-len <usize>\n  --max-change-points <usize>\n  --max-depth <usize>\n  --jump <usize>\n  --input <path>                     Required (.csv or .npy)\n  --output <path>                    Write JSON output to file"
+                "USAGE:\n  cpd detect --input <path> [OPTIONS]\n\nOPTIONS:\n  --algorithm <pelt|binseg|wbs>       Default: pelt\n  --cost <ar|l1_median|l2|normal|nig> Default: l2\n  --penalty <bic|aic|manual>          Default: bic\n  --penalty-value <float>             Required when --penalty=manual\n  --k <usize>                         Use KnownK stopping\n  --seed <u64>                        WBS seed only\n  --min-segment-len <usize>\n  --max-change-points <usize>\n  --max-depth <usize>\n  --jump <usize>\n  --input <path>                      Required (.csv or .npy)\n  --output <path>                     Write JSON output to file"
             );
             Ok(())
         }
@@ -1043,6 +1045,7 @@ fn build_detect_pipeline(args: &DetectArgs) -> Result<PipelineSpec, CliError> {
         detector: DetectorConfig::Offline(detector),
         cost: match args.cost {
             CostArg::Ar => CostConfig::Ar,
+            CostArg::L1Median => CostConfig::L1Median,
             CostArg::L2 => CostConfig::L2,
             CostArg::Normal => CostConfig::Normal,
             CostArg::Nig => CostConfig::Nig,
@@ -1943,13 +1946,14 @@ fn parse_cost_value(value: Option<&Value>, context: &str) -> Result<CostConfig, 
     let raw = parse_string(value, context)?;
     let cost = match raw.to_ascii_lowercase().as_str() {
         "ar" => CostConfig::Ar,
+        "l1" | "l1_median" => CostConfig::L1Median,
         "l2" => CostConfig::L2,
         "normal" => CostConfig::Normal,
         "nig" => CostConfig::Nig,
         "none" => CostConfig::None,
         _ => {
             return Err(CliError::invalid_input(format!(
-                "unsupported {context} '{raw}'; expected one of: 'ar', 'l2', 'normal', 'nig', 'none'"
+                "unsupported {context} '{raw}'; expected one of: 'ar', 'l1_median', 'l2', 'normal', 'nig', 'none'"
             )));
         }
     };
