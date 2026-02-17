@@ -232,7 +232,7 @@ impl PyDetectorKind {
             "fpop" => Ok(Self::Fpop),
             "segneigh" | "seg_neigh" | "dynp" => Ok(Self::SegNeigh),
             _ => Err(PyValueError::new_err(format!(
-                "unsupported detector '{detector}'; expected one of: 'pelt', 'binseg', 'fpop', 'segneigh'"
+                "unsupported detector '{detector}'; expected one of: 'pelt', 'binseg', 'fpop', 'segneigh' (aliases: 'seg_neigh', 'dynp')"
             ))),
         }
     }
@@ -1235,7 +1235,7 @@ fn parse_pipeline_detector_kind(
             None => Ok(DoctorOfflineDetectorConfig::Wbs(WbsConfig::default())),
         },
         _ => Err(PyValueError::new_err(format!(
-            "unsupported pipeline.detector.kind '{kind}'; expected one of: 'pelt', 'binseg', 'fpop', 'segneigh', 'wbs'"
+            "unsupported pipeline.detector.kind '{kind}'; expected one of: 'pelt', 'binseg', 'fpop', 'segneigh' (aliases: 'seg_neigh', 'dynp'), 'wbs'"
         ))),
     }
 }

@@ -2951,32 +2951,36 @@ fn build_offline_candidates(
     } else {
         let candidate = Candidate {
             pipeline: PipelineConfig::Offline {
-                detector: OfflineDetectorConfig::BinSeg(BinSegConfig::default()),
+                detector: OfflineDetectorConfig::SegNeigh(DynpConfig {
+                    stopping: Stopping::Penalized(Penalty::BIC),
+                    ..DynpConfig::default()
+                }),
                 cost: normal_cost,
                 constraints: base_constraints.clone(),
             },
             pipeline_id: format!(
-                "offline:binseg:{normal_cost_name}:jump={}",
+                "offline:segneigh:{normal_cost_name}:jump={}",
                 base_constraints.jump
             ),
             warnings: {
-                let mut warnings =
-                    vec!["Dynp is unavailable; mapped small-n exact branch to BinSeg".to_string()];
+                let mut warnings = vec![
+                    "SegNeigh exact DP can be expensive; runtime/memory may grow quickly with larger n and k"
+                        .to_string(),
+                ];
                 warnings.extend(normal_cost_warnings.clone());
                 warnings
             },
-            primary_reason:
-                "small-n branch mapped to BinSeg as nearest available exact-like option".to_string(),
+            primary_reason: "small-n branch uses exact SegNeigh dynamic programming".to_string(),
             driver_keys: vec!["regime_change_proxy", "change_density_score", "nan_rate"],
             profile: PerformanceProfile {
-                speed: 0.86,
-                accuracy: 0.70,
+                speed: 0.55,
+                accuracy: 0.88,
                 robustness: 0.60,
             },
             family: CandidateFamily::StrongMapped,
             supported_signals: vec![SignalKind::FewStrongChanges],
-            evidence_support: evidence_support(0.62, flags, true),
-            has_approximation_warning: true,
+            evidence_support: evidence_support(0.76, flags, false),
+            has_approximation_warning: false,
         };
         push_candidate(candidate, out, seen);
     }
@@ -3817,6 +3821,52 @@ mod tests {
                 .any(|warning| warning.contains("slow path")),
             "expected slow-path warning, got {:?}",
             recommendations[0].warnings
+        );
+    }
+
+    #[test]
+    fn small_n_exact_branch_uses_segneigh_and_no_dynp_unavailable_warning() {
+        let values = vec![0.0; 256];
+        let view = make_univariate_view(&values);
+        let flags = super::SignalFlags {
+            huge_n: false,
+            medium_n: false,
+            autocorrelated: false,
+            heavy_tail: false,
+            change_dense: false,
+            few_strong_changes: true,
+            masking_risk: false,
+            low_signal: false,
+            conflicting_signals: false,
+        };
+
+        let mut candidates = Vec::new();
+        let mut seen = BTreeSet::new();
+        super::build_offline_candidates(
+            &view,
+            &Constraints::default(),
+            flags,
+            &mut candidates,
+            &mut seen,
+        );
+
+        let small_n_candidate = candidates
+            .iter()
+            .find(|candidate| candidate.pipeline_id.starts_with("offline:segneigh:"))
+            .expect("small-n exact candidate should be present");
+        match &small_n_candidate.pipeline {
+            PipelineConfig::Offline {
+                detector: OfflineDetectorConfig::SegNeigh(_),
+                ..
+            } => {}
+            other => panic!("unexpected small-n exact candidate pipeline: {other:?}"),
+        }
+        assert!(
+            !small_n_candidate
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Dynp is unavailable")),
+            "small-n exact branch warning should not claim Dynp is unavailable"
         );
     }
 

@@ -167,7 +167,7 @@ impl AlgorithmArg {
             "segneigh" | "seg_neigh" | "dynp" => Ok(Self::SegNeigh),
             "wbs" => Ok(Self::Wbs),
             _ => Err(CliError::invalid_input(format!(
-                "invalid --algorithm '{raw}'; expected one of: pelt, binseg, fpop, segneigh, wbs"
+                "invalid --algorithm '{raw}'; expected one of: pelt, binseg, fpop, segneigh (aliases: seg_neigh, dynp), wbs"
             ))),
         }
     }
@@ -1768,7 +1768,7 @@ fn parse_detector_kind(
             Ok(OfflineDetectorConfig::Wbs(config))
         }
         _ => Err(CliError::invalid_input(format!(
-            "unsupported {context} kind '{kind}'; expected one of: 'pelt', 'binseg', 'fpop', 'segneigh', 'wbs'"
+            "unsupported {context} kind '{kind}'; expected one of: 'pelt', 'binseg', 'fpop', 'segneigh' (aliases: 'seg_neigh', 'dynp'), 'wbs'"
         ))),
     }
 }
