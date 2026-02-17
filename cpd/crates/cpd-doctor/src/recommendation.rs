@@ -1697,6 +1697,10 @@ fn score_candidate(
         confidence_assessment.ood_penalty,
     );
     let mut warnings = candidate.warnings.clone();
+    warnings.extend(multivariate_pipeline_warnings(
+        &candidate.pipeline,
+        dimension_count,
+    ));
     if confidence_assessment.ood_penalty > 0.0 {
         warnings.push(format!(
             "confidence reduced by OOD gating (family={}, divergence={:.3}, penalty={:.3}, raw={:.3}, calibrated={:.3})",
@@ -1757,6 +1761,43 @@ fn build_explanation(candidate: &Candidate, summary: &DiagnosticsSummary) -> Exp
         ),
         drivers,
         tradeoffs: vec![tradeoff, detail],
+    }
+}
+
+fn multivariate_pipeline_warnings(
+    pipeline: &PipelineConfig,
+    dimension_count: usize,
+) -> Vec<String> {
+    if dimension_count <= 1 {
+        return Vec::new();
+    }
+
+    match pipeline {
+        PipelineConfig::Offline { cost, .. } => {
+            let message = match cost {
+                OfflineCostKind::Normal => Some(
+                    "multivariate semantics: CostNormalMeanVar uses diagonal covariance (independent per-dimension Gaussian terms summed across dimensions); full-covariance Normal is not yet implemented",
+                ),
+                OfflineCostKind::Nig => Some(
+                    "multivariate semantics: CostNIGMarginal uses diagonal covariance assumptions (independent per-dimension NIG marginals summed across dimensions)",
+                ),
+                OfflineCostKind::Ar => Some(
+                    "multivariate semantics: CostAR fits autoregressive residual models independently per dimension and sums segment costs",
+                ),
+                OfflineCostKind::L2 => Some(
+                    "multivariate semantics: CostL2Mean computes additive per-dimension SSE and sums across dimensions",
+                ),
+                OfflineCostKind::L1Median => Some(
+                    "multivariate semantics: CostL1Median computes per-dimension median absolute deviation costs and sums across dimensions",
+                ),
+            };
+            message
+                .map(|entry| vec![entry.to_string()])
+                .unwrap_or_default()
+        }
+        PipelineConfig::Online { .. } => vec![
+            "multivariate limitation: online detectors (BOCPD/CUSUM/Page-Hinkley) currently require univariate updates (d=1)".to_string(),
+        ],
     }
 }
 
@@ -3378,6 +3419,19 @@ mod tests {
         .expect("test view should be valid")
     }
 
+    fn make_multivariate_view(values: &[f64], n: usize, d: usize) -> TimeSeriesView<'_> {
+        TimeSeriesView::from_f64(
+            values,
+            n,
+            d,
+            MemoryLayout::CContiguous,
+            None,
+            TimeIndex::None,
+            MissingPolicy::Ignore,
+        )
+        .expect("multivariate view should be valid")
+    }
+
     fn make_univariate_view_with_mask<'a>(values: &'a [f64], mask: &'a [u8]) -> TimeSeriesView<'a> {
         TimeSeriesView::from_f64(
             values,
@@ -3691,6 +3745,33 @@ mod tests {
     }
 
     #[test]
+    fn recommend_offline_multivariate_adds_semantics_warning() {
+        let n = 300;
+        let d = 4;
+        let mut values = vec![0.0; n * d];
+        for t in 0..n {
+            for dim in 0..d {
+                let base = if t < n / 2 { 0.0 } else { 6.0 };
+                values[t * d + dim] = base + 0.25 * dim as f64 + 0.001 * t as f64;
+            }
+        }
+
+        let view = make_multivariate_view(values.as_slice(), n, d);
+        let recommendations =
+            recommend(&view, Objective::Balanced, false, None, 0.20, true).expect("recommend");
+
+        assert!(!recommendations.is_empty());
+        assert!(
+            recommendations[0]
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("multivariate semantics")),
+            "expected multivariate semantics warning, got {:?}",
+            recommendations[0].warnings
+        );
+    }
+
+    #[test]
     fn recommend_online_binary_prefers_bocpd_bernoulli() {
         let values = (0..1024)
             .map(|idx| if idx % 2 == 0 { 0.0 } else { 1.0 })
@@ -3721,6 +3802,32 @@ mod tests {
             }
             other => panic!("unexpected top recommendation: {other:?}"),
         }
+    }
+
+    #[test]
+    fn recommend_online_multivariate_warns_univariate_limitation() {
+        let n = 256;
+        let d = 3;
+        let mut values = vec![0.0; n * d];
+        for t in 0..n {
+            for dim in 0..d {
+                values[t * d + dim] = (0.01 * t as f64).sin() + dim as f64 * 0.1;
+            }
+        }
+        let view = make_multivariate_view(values.as_slice(), n, d);
+
+        let recommendations =
+            recommend(&view, Objective::Balanced, true, None, 0.20, true).expect("recommend");
+
+        assert!(!recommendations.is_empty());
+        assert!(
+            recommendations[0]
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("currently require univariate updates")),
+            "expected online multivariate limitation warning, got {:?}",
+            recommendations[0].warnings
+        );
     }
 
     #[test]
