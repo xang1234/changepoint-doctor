@@ -48,6 +48,21 @@
       }
     },
     {
+      "id": "segneigh_l2_n2e3_k2_jump1_minseg4",
+      "bench": "offline_segneigh",
+      "criterion_id": "segneigh_l2_n2e3_k2_jump1_minseg4"
+    },
+    {
+      "id": "segneigh_l2_n4e3_k6_jump2_minseg6",
+      "bench": "offline_segneigh",
+      "criterion_id": "segneigh_l2_n4e3_k6_jump2_minseg6"
+    },
+    {
+      "id": "segneigh_l2_n8e3_k12_jump4_minseg8",
+      "bench": "offline_segneigh",
+      "criterion_id": "segneigh_l2_n8e3_k12_jump4_minseg8"
+    },
+    {
       "id": "cost_models/l2_precompute_n1e6_d1",
       "bench": "cost_l2",
       "criterion_id": "cost_models/l2_precompute_n1e6_d1",

@@ -162,6 +162,26 @@ BIC/AIC complexity terms are model-aware by default:
 
 Advanced users can still override `params_per_segment` in low-level pipeline detector config.
 
+### SegNeigh Sizing Guide (`detector="segneigh"` / `"dynp"`)
+
+SegNeigh is exact dynamic programming for fixed-`k` segmentation (`n_bkps` / `KnownK`).
+
+- Let `m` be the effective candidate count after constraints (`jump`, `candidate_splits`, `min_segment_len` filtering).
+- Expected scaling is approximately:
+  - runtime: `O(k * m^2)`
+  - memory: `O(k * m + m)`
+- Practical guidance:
+  - Use SegNeigh when `k` is known and `m` is modest.
+  - Increase `jump` and/or `min_segment_len` first when runtime or memory is high.
+  - Prefer `pelt`/`fpop` when `k` is unknown or when very large `n` requires penalty-based model selection.
+
+Reproducible local benchmark harness for representative `(n, k)` regimes:
+
+```bash
+cd cpd
+cargo bench -p cpd-bench --bench offline_segneigh
+```
+
 ## Preprocess Config Contract
 
 `detect_offline(..., preprocess=...)` validates keys and method payloads.

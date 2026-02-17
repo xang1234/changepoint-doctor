@@ -69,3 +69,8 @@ path = "benches/offline_binseg.rs"
 name = "offline_wbs"
 harness = false
 path = "benches/offline_wbs.rs"
+
+[[bench]]
+name = "offline_segneigh"
+harness = false
+path = "benches/offline_segneigh.rs"

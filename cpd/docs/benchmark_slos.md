@@ -26,6 +26,9 @@ Protected case IDs:
 - `binseg_l2_n1e4_d1_jump1`
 - `binseg_l2_n1e5_d1_jump1`
 - `binseg_l2_n1e6_d1_jump1`
+- `segneigh_l2_n2e3_k2_jump1_minseg4`
+- `segneigh_l2_n4e3_k6_jump2_minseg6`
+- `segneigh_l2_n8e3_k12_jump4_minseg8`
 - `cost_models/l2_precompute_n1e6_d1`
 - `cost_models/normal_precompute_n1e6_d1`
 - `cost_models/l2_segment_queries_n1e6_d1_1m`
