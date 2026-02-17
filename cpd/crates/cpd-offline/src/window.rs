@@ -434,7 +434,7 @@ impl<C: CostModel> OfflineDetector for SlidingWindow<C> {
             ));
         }
 
-        let mut ranked_candidates = extract_peaks(&compute_candidate_scores(
+        let candidate_scores = compute_candidate_scores(
             &self.cost_model,
             &cache,
             &validated.effective_candidates,
@@ -445,9 +445,14 @@ impl<C: CostModel> OfflineDetector for SlidingWindow<C> {
             started_at,
             &mut runtime,
             &mut iteration,
-        )?);
-        runtime.peaks_considered = ranked_candidates.len();
-        rank_candidates(&mut ranked_candidates);
+        )?;
+
+        let mut ranked_all_candidates = candidate_scores.clone();
+        rank_candidates(&mut ranked_all_candidates);
+
+        let mut ranked_peak_candidates = extract_peaks(&candidate_scores);
+        runtime.peaks_considered = ranked_peak_candidates.len();
+        rank_candidates(&mut ranked_peak_candidates);
 
         let accepted_splits = match &self.config.stopping {
             Stopping::KnownK(k) => {
@@ -459,7 +464,7 @@ impl<C: CostModel> OfflineDetector for SlidingWindow<C> {
                     )));
                 }
                 notes.push(format!("stopping=KnownK({k})"));
-                select_known_k(&ranked_candidates, &validated, x.n, *k)?
+                select_known_k(&ranked_all_candidates, &validated, x.n, *k)?
             }
             Stopping::Penalized(penalty) => {
                 let resolved = resolve_penalty_beta(
@@ -473,7 +478,7 @@ impl<C: CostModel> OfflineDetector for SlidingWindow<C> {
                     "stopping=Penalized({penalty:?}), beta={}, params_per_segment={} ({})",
                     resolved.beta, resolved.params_per_segment, resolved.params_source
                 ));
-                select_penalized(&ranked_candidates, &validated, x.n, resolved.beta)?
+                select_penalized(&ranked_peak_candidates, &validated, x.n, resolved.beta)?
             }
             Stopping::PenaltyPath(path) => {
                 return Err(CpdError::not_supported(format!(
@@ -843,6 +848,38 @@ mod tests {
             .detect(&view, &ctx)
             .expect_err("KnownK must reject when max_change_points < k");
         assert!(err.to_string().contains("max_change_points"));
+    }
+
+    #[test]
+    fn known_k_ranks_all_candidates_on_flat_scores() {
+        let detector = SlidingWindow::new(
+            CostL2Mean::default(),
+            SlidingWindowConfig {
+                stopping: Stopping::KnownK(2),
+                window_width: 4,
+                params_per_segment: 2,
+                cancel_check_every: 4,
+            },
+        )
+        .expect("config should be valid");
+
+        let values = vec![0.0; 12];
+        let view = make_f64_view(
+            &values,
+            values.len(),
+            1,
+            MemoryLayout::CContiguous,
+            MissingPolicy::Error,
+        );
+        let constraints = Constraints {
+            min_segment_len: 2,
+            ..Constraints::default()
+        };
+        let ctx = ExecutionContext::new(&constraints);
+        let result = detector
+            .detect(&view, &ctx)
+            .expect("KnownK should be feasible");
+        assert_eq!(result.breakpoints, vec![2, 4, 12]);
     }
 
     #[test]
