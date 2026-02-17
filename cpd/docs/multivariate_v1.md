@@ -64,10 +64,11 @@ Run the full matrix:
 cargo bench -p cpd-bench --bench cost_multivariate
 ```
 
-Run a single exact benchmark id:
+Run a single benchmark id (short id or `group/id`) using `CPD_BENCH_EXACT`:
 
 ```bash
-cargo bench -p cpd-bench --bench cost_multivariate -- --exact normal_segment_cost_n5e4_d16
+CPD_BENCH_EXACT=normal_segment_cost_n5e4_d16 \
+  cargo bench -p cpd-bench --bench cost_multivariate
 ```
 
 The benchmark includes `d in {1, 8, 16}` for:
@@ -76,7 +77,7 @@ The benchmark includes `d in {1, 8, 16}` for:
 
 ## Doctor Awareness
 
-Doctor recommendations now emit explicit multivariate warnings:
+Doctor awareness:
 
 - Offline recommendations explain additive/diagonal semantics for the selected cost.
-- Online recommendations warn that current online detectors are univariate-only (`d=1`).
+- Online recommendations are rejected for multivariate inputs (`d>1`) with a clear guidance error.

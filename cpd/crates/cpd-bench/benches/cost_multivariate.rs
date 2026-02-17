@@ -64,13 +64,14 @@ fn make_c_contiguous_view<'a>(values: &'a [f64], n: usize, d: usize) -> TimeSeri
 }
 
 fn exact_filter() -> Option<String> {
-    let mut args = std::env::args();
-    while let Some(arg) = args.next() {
-        if arg == "--exact" {
-            return args.next();
+    std::env::var("CPD_BENCH_EXACT").ok().and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
         }
-    }
-    None
+    })
 }
 
 fn should_run_bench(bench_id: &str, exact: Option<&str>) -> bool {

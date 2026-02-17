@@ -4,8 +4,8 @@
 
 use cpd_core::{CachePolicy, MemoryLayout, MissingPolicy, TimeIndex, TimeSeriesView};
 use cpd_costs::{
-    CostAR, CostBernoulli, CostL2Mean, CostLinear, CostModel, CostNIGMarginal, CostNormalMeanVar,
-    CostPoissonRate,
+    CostAR, CostBernoulli, CostL1Median, CostL2Mean, CostLinear, CostModel, CostNIGMarginal,
+    CostNormalMeanVar, CostPoissonRate,
 };
 
 const N: usize = 96;
@@ -120,6 +120,7 @@ fn assert_additive_multivariate<M: CostModel>(
 #[test]
 fn all_v1_costs_match_univariate_sum_for_d8_and_d16() {
     let l2 = CostL2Mean::default();
+    let l1 = CostL1Median::default();
     let normal = CostNormalMeanVar::default();
     let nig = CostNIGMarginal::default();
     let poisson = CostPoissonRate::default();
@@ -129,6 +130,7 @@ fn all_v1_costs_match_univariate_sum_for_d8_and_d16() {
 
     for d in [8_usize, 16] {
         let continuous = continuous_values(N, d);
+        assert_additive_multivariate("CostL1Median", &l1, continuous.as_slice(), N, d, 1e-10);
         assert_additive_multivariate("CostL2Mean", &l2, continuous.as_slice(), N, d, 1e-10);
         assert_additive_multivariate(
             "CostNormalMeanVar",

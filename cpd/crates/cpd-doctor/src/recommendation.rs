@@ -719,6 +719,12 @@ pub fn recommend(
             "min_confidence must be finite and within [0, 1]; got {min_confidence}"
         )));
     }
+    if online && x.d > 1 {
+        return Err(CpdError::invalid_input(format!(
+            "Doctor online recommendations currently support univariate series only (d=1); got d={}. Use offline recommendations for multivariate data.",
+            x.d
+        )));
+    }
 
     let base_constraints = constraints.unwrap_or_default();
     validate_constraints_config(&base_constraints)?;
@@ -3805,7 +3811,7 @@ mod tests {
     }
 
     #[test]
-    fn recommend_online_multivariate_warns_univariate_limitation() {
+    fn recommend_online_multivariate_is_rejected_with_clear_error() {
         let n = 256;
         let d = 3;
         let mut values = vec![0.0; n * d];
@@ -3816,18 +3822,11 @@ mod tests {
         }
         let view = make_multivariate_view(values.as_slice(), n, d);
 
-        let recommendations =
-            recommend(&view, Objective::Balanced, true, None, 0.20, true).expect("recommend");
-
-        assert!(!recommendations.is_empty());
-        assert!(
-            recommendations[0]
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("currently require univariate updates")),
-            "expected online multivariate limitation warning, got {:?}",
-            recommendations[0].warnings
-        );
+        let err = recommend(&view, Objective::Balanced, true, None, 0.20, true)
+            .expect_err("online multivariate recommend should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("support univariate series only"));
+        assert!(msg.contains("Use offline recommendations for multivariate data"));
     }
 
     #[test]
