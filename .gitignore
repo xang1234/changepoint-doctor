@@ -12,3 +12,7 @@ cpd/python/*.egg-info/
 cpd/python/.pytest_cache/
 cpd/python/**/__pycache__/
 cpd/python/cpd/*.so
+
+# Sphinx documentation build artifacts
+docs/.venv/
+docs/_build/

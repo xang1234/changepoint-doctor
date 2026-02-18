@@ -1,0 +1,9 @@
+# Sphinx documentation build dependencies
+sphinx>=7.2,<8
+pydata-sphinx-theme>=0.15,<1
+myst-parser>=3,<4
+myst-nb>=1,<1.2
+sphinx-copybutton>=0.5,<1
+sphinx-design>=0.6,<1
+sphinxcontrib-bibtex>=2.6,<3
+sphinxcontrib-mermaid>=1,<2

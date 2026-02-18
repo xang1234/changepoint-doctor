@@ -1,0 +1,12 @@
+/* Minimal theme overrides for changepoint-doctor docs */
+
+/* Tighten spacing in parameter tables */
+.bd-content table td,
+.bd-content table th {
+    padding: 0.4rem 0.6rem;
+}
+
+/* Ensure code blocks don't overflow on narrow screens */
+.bd-content pre {
+    overflow-x: auto;
+}
