@@ -63,19 +63,21 @@ cd cpd/python
 rm -rf .venv
 /opt/homebrew/bin/python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip maturin numpy pytest
+python -m pip install --upgrade pip maturin
+python -m pip install --upgrade ".[dev]"
 ```
 
 ## Local Sanity Path (Matches CI Expectations)
 
 This mirrors the `python-mvp-a-api` job in
-`/Users/admin/Documents/Work/claude-doctor-changepoint/.github/workflows/pr-checks.yml`.
+`../../.github/workflows/pr-checks.yml`.
 
 From repository root:
 
 ```bash
 cd cpd/python
-python -m pip install --upgrade pip maturin numpy pytest
+python -m pip install --upgrade pip maturin
+python -m pip install --upgrade ".[dev]"
 maturin build --release \
   --manifest-path ../crates/cpd-python/Cargo.toml \
   --features extension-module \
@@ -92,6 +94,10 @@ PYO3_PYTHON="${PYTHON_BIN}" cargo test -p cpd-python --lib
 PYO3_PYTHON="${PYTHON_BIN}" cargo test -p cpd-python --features preprocess --lib
 PYO3_PYTHON="${PYTHON_BIN}" cargo test -p cpd-python --features serde --lib result_objects::tests::
 ```
+
+`.[plot]`/`.[notebooks]`/`.[parity]`/`.[dev]` extras only install optional
+Python dependencies. They do not toggle Rust compile-time features. Rust
+features are configured through `maturin`/`cargo --features ...`.
 
 This sequence verifies:
 

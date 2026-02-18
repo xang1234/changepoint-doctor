@@ -17,6 +17,8 @@ Install and run quickly:
 python -m pip install changepoint-doctor
 ```
 
+> Install/import naming: install with `python -m pip install changepoint-doctor`, then import with `import cpd` in Python. Optional compatibility alias: `import changepoint_doctor as cpd`.
+
 ```python
 import numpy as np
 import cpd
@@ -36,7 +38,7 @@ try:
     fig = result.plot(x, title="Detected breakpoints")
     fig.savefig("breakpoints.png", dpi=150, bbox_inches="tight")
 except ImportError:
-    print("Install matplotlib to enable plotting.")
+    print("Install changepoint-doctor[plot] to enable plotting.")
 ```
 
 ![Detected breakpoints (PELT)](cpd/docs/assets/readme_breakpoints.svg)
@@ -72,6 +74,8 @@ Python high-level classes include `cpd.Pelt`, `cpd.Binseg`, `cpd.Fpop`, `cpd.Boc
 - [Notebook quickstarts](cpd/python/examples/notebooks/README.md)
 - [Python quickstart](cpd/python/QUICKSTART.md)
 - [Python bindings README](cpd/python/README.md)
+- [CLI guide (repository docs)](cpd/docs/cli.md)
+- [CLI guide (docs site)](docs/getting-started/cli.md)
 - [Reproducibility modes](cpd/docs/reproducibility_modes.md)
 
 ## The changepoint doctor function

@@ -49,6 +49,7 @@ struct DetectArgs {
     jump: Option<usize>,
     input: PathBuf,
     output: Option<PathBuf>,
+    json_format: JsonFormat,
 }
 
 impl Default for DetectArgs {
@@ -67,6 +68,7 @@ impl Default for DetectArgs {
             jump: None,
             input: PathBuf::new(),
             output: None,
+            json_format: JsonFormat::Pretty,
         }
     }
 }
@@ -76,6 +78,7 @@ struct RunArgs {
     pipeline: PathBuf,
     input: PathBuf,
     output: Option<PathBuf>,
+    json_format: JsonFormat,
 }
 
 #[derive(Debug)]
@@ -87,6 +90,7 @@ struct DoctorArgs {
     constraints: Option<PathBuf>,
     input: PathBuf,
     output: Option<PathBuf>,
+    json_format: JsonFormat,
 }
 
 impl Default for DoctorArgs {
@@ -99,6 +103,7 @@ impl Default for DoctorArgs {
             constraints: None,
             input: PathBuf::new(),
             output: None,
+            json_format: JsonFormat::Pretty,
         }
     }
 }
@@ -109,6 +114,7 @@ struct EvalArgs {
     ground_truth: PathBuf,
     tolerance: usize,
     output: Option<PathBuf>,
+    json_format: JsonFormat,
 }
 
 impl Default for EvalArgs {
@@ -118,6 +124,7 @@ impl Default for EvalArgs {
             ground_truth: PathBuf::new(),
             tolerance: 1,
             output: None,
+            json_format: JsonFormat::Pretty,
         }
     }
 }
@@ -156,6 +163,12 @@ enum ObjectiveArg {
     Speed,
     Accuracy,
     Robustness,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JsonFormat {
+    Pretty,
+    Compact,
 }
 
 impl AlgorithmArg {
@@ -563,6 +576,7 @@ fn parse_cli_from_env() -> Result<Option<Cli>, CliError> {
 
 fn parse_detect_args(tokens: &[String]) -> Result<DetectArgs, CliError> {
     let mut args = DetectArgs::default();
+    let mut json_format_override: Option<JsonFormat> = None;
     let mut idx = 0usize;
     while idx < tokens.len() {
         let (flag, inline_value) = split_flag(tokens[idx].as_str())?;
@@ -616,6 +630,9 @@ fn parse_detect_args(tokens: &[String]) -> Result<DetectArgs, CliError> {
                 let raw = take_flag_value(flag, inline_value, tokens, &mut idx)?;
                 args.output = Some(PathBuf::from(raw));
             }
+            "--pretty-json" | "--compact-json" => {
+                set_json_format_flag(&mut json_format_override, flag, inline_value)?;
+            }
             other => {
                 return Err(CliError::invalid_input(format!(
                     "unknown detect option '{other}'"
@@ -629,6 +646,7 @@ fn parse_detect_args(tokens: &[String]) -> Result<DetectArgs, CliError> {
         return Err(CliError::invalid_input("detect requires --input <path>"));
     }
 
+    args.json_format = json_format_override.unwrap_or(JsonFormat::Pretty);
     Ok(args)
 }
 
@@ -636,6 +654,7 @@ fn parse_run_args(tokens: &[String]) -> Result<RunArgs, CliError> {
     let mut pipeline = PathBuf::new();
     let mut input = PathBuf::new();
     let mut output: Option<PathBuf> = None;
+    let mut json_format_override: Option<JsonFormat> = None;
 
     let mut idx = 0usize;
     while idx < tokens.len() {
@@ -652,6 +671,9 @@ fn parse_run_args(tokens: &[String]) -> Result<RunArgs, CliError> {
             "--output" => {
                 let raw = take_flag_value(flag, inline_value, tokens, &mut idx)?;
                 output = Some(PathBuf::from(raw));
+            }
+            "--pretty-json" | "--compact-json" => {
+                set_json_format_flag(&mut json_format_override, flag, inline_value)?;
             }
             other => {
                 return Err(CliError::invalid_input(format!(
@@ -673,11 +695,13 @@ fn parse_run_args(tokens: &[String]) -> Result<RunArgs, CliError> {
         pipeline,
         input,
         output,
+        json_format: json_format_override.unwrap_or(JsonFormat::Pretty),
     })
 }
 
 fn parse_doctor_args(tokens: &[String]) -> Result<DoctorArgs, CliError> {
     let mut args = DoctorArgs::default();
+    let mut json_format_override: Option<JsonFormat> = None;
     let mut idx = 0usize;
     while idx < tokens.len() {
         let (flag, inline_value) = split_flag(tokens[idx].as_str())?;
@@ -710,6 +734,9 @@ fn parse_doctor_args(tokens: &[String]) -> Result<DoctorArgs, CliError> {
                 let raw = take_flag_value(flag, inline_value, tokens, &mut idx)?;
                 args.output = Some(PathBuf::from(raw));
             }
+            "--pretty-json" | "--compact-json" => {
+                set_json_format_flag(&mut json_format_override, flag, inline_value)?;
+            }
             other => {
                 return Err(CliError::invalid_input(format!(
                     "unknown doctor option '{other}'"
@@ -723,11 +750,13 @@ fn parse_doctor_args(tokens: &[String]) -> Result<DoctorArgs, CliError> {
         return Err(CliError::invalid_input("doctor requires --input <path>"));
     }
 
+    args.json_format = json_format_override.unwrap_or(JsonFormat::Pretty);
     Ok(args)
 }
 
 fn parse_eval_args(tokens: &[String]) -> Result<EvalArgs, CliError> {
     let mut args = EvalArgs::default();
+    let mut json_format_override: Option<JsonFormat> = None;
     let mut idx = 0usize;
     while idx < tokens.len() {
         let (flag, inline_value) = split_flag(tokens[idx].as_str())?;
@@ -747,6 +776,9 @@ fn parse_eval_args(tokens: &[String]) -> Result<EvalArgs, CliError> {
             "--output" => {
                 let raw = take_flag_value(flag, inline_value, tokens, &mut idx)?;
                 args.output = Some(PathBuf::from(raw));
+            }
+            "--pretty-json" | "--compact-json" => {
+                set_json_format_flag(&mut json_format_override, flag, inline_value)?;
             }
             other => {
                 return Err(CliError::invalid_input(format!(
@@ -768,6 +800,7 @@ fn parse_eval_args(tokens: &[String]) -> Result<EvalArgs, CliError> {
         ));
     }
 
+    args.json_format = json_format_override.unwrap_or(JsonFormat::Pretty);
     Ok(args)
 }
 
@@ -814,6 +847,35 @@ fn ensure_no_inline_value(flag: &str, inline_value: Option<String>) -> Result<()
     Ok(())
 }
 
+fn set_json_format_flag(
+    current: &mut Option<JsonFormat>,
+    flag: &str,
+    inline_value: Option<String>,
+) -> Result<(), CliError> {
+    ensure_no_inline_value(flag, inline_value)?;
+
+    let requested = match flag {
+        "--pretty-json" => JsonFormat::Pretty,
+        "--compact-json" => JsonFormat::Compact,
+        _ => {
+            return Err(CliError::invalid_input(format!(
+                "unknown json format option '{flag}'"
+            )));
+        }
+    };
+
+    if let Some(existing) = current
+        && *existing != requested
+    {
+        return Err(CliError::invalid_input(
+            "--pretty-json and --compact-json cannot be combined",
+        ));
+    }
+
+    *current = Some(requested);
+    Ok(())
+}
+
 fn parse_usize_arg(raw: &str, flag: &str) -> Result<usize, CliError> {
     raw.parse::<usize>().map_err(|_| {
         CliError::invalid_input(format!(
@@ -850,25 +912,25 @@ fn print_command_help(command: &str) -> Result<(), CliError> {
     match command {
         "detect" => {
             println!(
-                "USAGE:\n  cpd detect --input <path> [OPTIONS]\n\nOPTIONS:\n  --algorithm <pelt|binseg|fpop|segneigh|wbs>                          Default: pelt\n  --cost <ar|cosine|l1_median|l2|normal|normal_full_cov|nig|rank>      Default: l2\n  --penalty <bic|aic|manual>                                            Default: bic\n  --penalty-value <float>                                               Required when --penalty=manual\n  --k <usize>                                                           Use KnownK stopping\n  --seed <u64>                                                          WBS seed only\n  --min-segment-len <usize>\n  --max-change-points <usize>\n  --max-depth <usize>\n  --jump <usize>\n  --input <path>                                                        Required (.csv or .npy)\n  --output <path>                                                       Write JSON output to file"
+                "USAGE:\n  cpd detect --input <path> [OPTIONS]\n\nOPTIONS:\n  --algorithm <pelt|binseg|fpop|segneigh|wbs>                          Default: pelt\n  --cost <ar|cosine|l1_median|l2|normal|normal_full_cov|nig|rank>      Default: l2\n  --penalty <bic|aic|manual>                                            Default: bic\n  --penalty-value <float>                                               Required when --penalty=manual\n  --k <usize>                                                           Use KnownK stopping\n  --seed <u64>                                                          WBS seed only\n  --min-segment-len <usize>\n  --max-change-points <usize>\n  --max-depth <usize>\n  --jump <usize>\n  --input <path>                                                        Required (.csv or .npy)\n  --output <path>                                                       Write JSON output to file\n  --pretty-json                                                         Pretty-print JSON output (default)\n  --compact-json                                                        Emit compact one-line JSON"
             );
             Ok(())
         }
         "run" => {
             println!(
-                "USAGE:\n  cpd run --pipeline <spec.json> --input <path> [OPTIONS]\n\nOPTIONS:\n  --pipeline <path>                  Required pipeline JSON\n  --input <path>                     Required input (.csv or .npy)\n  --output <path>                    Write JSON output to file"
+                "USAGE:\n  cpd run --pipeline <spec.json> --input <path> [OPTIONS]\n\nOPTIONS:\n  --pipeline <path>                  Required pipeline JSON\n  --input <path>                     Required input (.csv or .npy)\n  --output <path>                    Write JSON output to file\n  --pretty-json                      Pretty-print JSON output (default)\n  --compact-json                     Emit compact one-line JSON"
             );
             Ok(())
         }
         "doctor" => {
             println!(
-                "USAGE:\n  cpd doctor --input <path> [OPTIONS]\n\nOPTIONS:\n  --objective <balanced|speed|accuracy|robustness>   Default: balanced\n  --min-confidence <float>                             Default: 0.2\n  --allow-abstain\n  --online\n  --constraints <path>                                 Optional constraints JSON patch\n  --input <path>                                       Required (.csv or .npy)\n  --output <path>                                      Write JSON output to file"
+                "USAGE:\n  cpd doctor --input <path> [OPTIONS]\n\nOPTIONS:\n  --objective <balanced|speed|accuracy|robustness>   Default: balanced\n  --min-confidence <float>                             Default: 0.2\n  --allow-abstain\n  --online\n  --constraints <path>                                 Optional constraints JSON patch\n  --input <path>                                       Required (.csv or .npy)\n  --output <path>                                      Write JSON output to file\n  --pretty-json                                        Pretty-print JSON output (default)\n  --compact-json                                       Emit compact one-line JSON"
             );
             Ok(())
         }
         "eval" => {
             println!(
-                "USAGE:\n  cpd eval --predictions <path> --ground-truth <path> [OPTIONS]\n\nOPTIONS:\n  --predictions <path>               Required predictions JSON\n  --ground-truth <path>              Required ground-truth JSON\n  --tolerance <usize>                Default: 1 (offline mode)\n  --output <path>                    Write JSON output to file"
+                "USAGE:\n  cpd eval --predictions <path> --ground-truth <path> [OPTIONS]\n\nOPTIONS:\n  --predictions <path>               Required predictions JSON\n  --ground-truth <path>              Required ground-truth JSON\n  --tolerance <usize>                Default: 1 (offline mode)\n  --output <path>                    Write JSON output to file\n  --pretty-json                      Pretty-print JSON output (default)\n  --compact-json                     Emit compact one-line JSON"
             );
             Ok(())
         }
@@ -892,6 +954,7 @@ fn handle_detect(args: DetectArgs) -> Result<(), CliError> {
             result,
         },
         args.output.as_deref(),
+        args.json_format,
     )
 }
 
@@ -909,6 +972,7 @@ fn handle_run(args: RunArgs) -> Result<(), CliError> {
             result,
         },
         args.output.as_deref(),
+        args.json_format,
     )
 }
 
@@ -941,6 +1005,7 @@ fn handle_doctor(args: DoctorArgs) -> Result<(), CliError> {
             recommendations: recommendations_to_output(recommendations),
         },
         args.output.as_deref(),
+        args.json_format,
     )
 }
 
@@ -979,6 +1044,7 @@ fn handle_eval(args: EvalArgs) -> Result<(), CliError> {
                 },
             },
             args.output.as_deref(),
+            args.json_format,
         );
     }
 
@@ -1006,6 +1072,7 @@ fn handle_eval(args: EvalArgs) -> Result<(), CliError> {
             },
         },
         args.output.as_deref(),
+        args.json_format,
     )
 }
 
@@ -2420,12 +2487,21 @@ fn extract_offline_result(value: &Value) -> Result<OfflineChangePointResult, Cli
     })
 }
 
+fn encode_json<T: Serialize>(payload: &T, json_format: JsonFormat) -> Result<String, CliError> {
+    match json_format {
+        JsonFormat::Pretty => serde_json::to_string_pretty(payload)
+            .map_err(|source| CliError::json("failed to serialize JSON output", source)),
+        JsonFormat::Compact => serde_json::to_string(payload)
+            .map_err(|source| CliError::json("failed to serialize JSON output", source)),
+    }
+}
+
 fn write_json_output<T: Serialize>(
     payload: &T,
     output_path: Option<&Path>,
+    json_format: JsonFormat,
 ) -> Result<(), CliError> {
-    let encoded = serde_json::to_string_pretty(payload)
-        .map_err(|source| CliError::json("failed to serialize JSON output", source))?;
+    let encoded = encode_json(payload, json_format)?;
 
     if let Some(path) = output_path {
         fs::write(path, format!("{encoded}\n"))
@@ -2457,8 +2533,9 @@ fn emit_structured_error(err: &CliError) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_detect_pipeline, parse_csv_data, parse_detect_args, parse_npy_bytes,
-        parse_pipeline_spec_document, resolve_stopping,
+        JsonFormat, build_detect_pipeline, encode_json, parse_csv_data, parse_detect_args,
+        parse_doctor_args, parse_eval_args, parse_npy_bytes, parse_pipeline_spec_document,
+        parse_run_args, resolve_stopping,
     };
     use cpd_core::{Penalty, Stopping};
     use cpd_doctor::{CostConfig, DetectorConfig, OfflineDetectorConfig};
@@ -2733,6 +2810,87 @@ mod tests {
                 .contains("--penalty cannot be combined with --k"),
             "unexpected error message: {err}"
         );
+    }
+
+    #[test]
+    fn detect_parser_accepts_compact_json_flag() {
+        let tokens = vec![
+            "--input".to_string(),
+            "/tmp/series.csv".to_string(),
+            "--compact-json".to_string(),
+        ];
+        let args = parse_detect_args(tokens.as_slice()).expect("detect args should parse");
+        assert_eq!(args.json_format, JsonFormat::Compact);
+    }
+
+    #[test]
+    fn detect_parser_rejects_conflicting_json_flags() {
+        let tokens = vec![
+            "--input".to_string(),
+            "/tmp/series.csv".to_string(),
+            "--pretty-json".to_string(),
+            "--compact-json".to_string(),
+        ];
+        let err = parse_detect_args(tokens.as_slice()).expect_err("conflicting flags should fail");
+        assert!(
+            err.to_string()
+                .contains("--pretty-json and --compact-json cannot be combined"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn run_parser_accepts_compact_json_flag() {
+        let tokens = vec![
+            "--pipeline".to_string(),
+            "/tmp/pipeline.json".to_string(),
+            "--input".to_string(),
+            "/tmp/series.csv".to_string(),
+            "--compact-json".to_string(),
+        ];
+        let args = parse_run_args(tokens.as_slice()).expect("run args should parse");
+        assert_eq!(args.json_format, JsonFormat::Compact);
+    }
+
+    #[test]
+    fn doctor_parser_rejects_conflicting_json_flags() {
+        let tokens = vec![
+            "--input".to_string(),
+            "/tmp/series.csv".to_string(),
+            "--compact-json".to_string(),
+            "--pretty-json".to_string(),
+        ];
+        let err = parse_doctor_args(tokens.as_slice()).expect_err("conflicting flags should fail");
+        assert!(
+            err.to_string()
+                .contains("--pretty-json and --compact-json cannot be combined"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn eval_parser_accepts_pretty_json_flag() {
+        let tokens = vec![
+            "--predictions".to_string(),
+            "/tmp/predictions.json".to_string(),
+            "--ground-truth".to_string(),
+            "/tmp/truth.json".to_string(),
+            "--pretty-json".to_string(),
+        ];
+        let args = parse_eval_args(tokens.as_slice()).expect("eval args should parse");
+        assert_eq!(args.json_format, JsonFormat::Pretty);
+    }
+
+    #[test]
+    fn encode_json_respects_requested_format() {
+        let payload = vec![1usize, 2usize];
+        let pretty = encode_json(&payload, JsonFormat::Pretty).expect("pretty json should encode");
+        let compact =
+            encode_json(&payload, JsonFormat::Compact).expect("compact json should encode");
+
+        assert!(pretty.contains('\n'));
+        assert!(!compact.contains('\n'));
+        assert_eq!(compact, "[1,2]");
     }
 
     fn make_npy_v1(descr: &str, fortran_order: bool, shape: &[usize], values: &[f64]) -> Vec<u8> {

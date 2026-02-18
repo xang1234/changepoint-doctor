@@ -2,6 +2,8 @@
 
 Get from zero to detected change points in 5 minutes.
 
+> Install/import naming: install with `python -m pip install changepoint-doctor`, then import with `import cpd` in Python. Optional compatibility alias: `import changepoint_doctor as cpd`.
+
 ## Offline detection
 
 Detect change points in a batch signal using PELT:
@@ -124,7 +126,7 @@ try:
     fig = result.plot(x, title="Detected breakpoints")
     fig.savefig("breakpoints.png", dpi=150, bbox_inches="tight")
 except ImportError:
-    print("Install matplotlib to enable plotting.")
+    print("Install changepoint-doctor[plot] to enable plotting.")
 ```
 
 ## Next steps

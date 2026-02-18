@@ -3,7 +3,8 @@
 ## Install from PyPI
 
 ```bash
-pip install changepoint-doctor
+python -m pip install --upgrade pip
+python -m pip install changepoint-doctor
 ```
 
 Verify the installation:
@@ -11,6 +12,8 @@ Verify the installation:
 ```bash
 python -c "import cpd; print(cpd.__version__)"
 ```
+
+> Install/import naming: install with `python -m pip install changepoint-doctor`, then import with `import cpd` in Python. Optional compatibility alias: `import changepoint_doctor as cpd`.
 
 ## Build from source
 
@@ -22,7 +25,8 @@ git clone https://github.com/xang1234/changepoint-doctor.git
 cd changepoint-doctor/cpd/python
 
 # Install build dependencies
-pip install --upgrade pip maturin numpy
+python -m pip install --upgrade pip maturin
+python -m pip install --upgrade ".[dev]"
 
 # Build and install the extension in development mode
 maturin develop --release --manifest-path ../crates/cpd-python/Cargo.toml
@@ -33,6 +37,18 @@ Verify:
 ```bash
 python -c "import cpd; print(cpd.__version__)"
 ```
+
+## Python extras vs Rust feature flags
+
+Python extras install optional Python tooling only:
+
+- `python -m pip install "changepoint-doctor[plot]"`
+- `python -m pip install "changepoint-doctor[notebooks]"`
+- `python -m pip install "changepoint-doctor[parity]"`
+- `python -m pip install "changepoint-doctor[dev]"`
+
+Rust feature flags are configured when building the extension/workspace (for
+example `maturin develop --features preprocess,serde ...` or `cargo ... --features ...`).
 
 ## Apple Silicon notes
 
@@ -55,7 +71,8 @@ cd cpd/python
 rm -rf .venv
 /opt/homebrew/bin/python3 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip maturin numpy pytest
+python -m pip install --upgrade pip maturin
+python -m pip install --upgrade ".[dev]"
 ```
 
 **Common mismatch symptoms:**
@@ -98,6 +115,8 @@ The Python package requires:
 - Python >= 3.9
 - NumPy >= 1.20
 
-Optional dependencies for extra features:
-- `matplotlib` for result plotting (`result.plot(...)`)
-- `jupyter` for running example notebooks
+Optional dependency groups:
+- `plot` for result plotting (`result.plot(...)`)
+- `notebooks` for Jupyter notebook workflows
+- `parity` for parity/test workflows
+- `dev` for local contributor workflows

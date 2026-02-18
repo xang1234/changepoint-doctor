@@ -17,10 +17,10 @@ resolver = "2"
 edition = "2024"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
-authors = ["cpd-rs contributors"]
+authors = ["changepoint-doctor contributors"]
 rust-version = "1.93"
-repository = "https://github.com/xang1234/dr-changepoint"
-homepage = "https://github.com/xang1234/dr-changepoint"
+homepage = "https://github.com/xang1234/changepoint-doctor"
+repository = "https://github.com/xang1234/changepoint-doctor"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

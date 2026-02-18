@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Fast change-point detection bindings backed by Rust."
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
-authors = [{ name = "cpd-rs contributors" }]
+authors = [{ name = "changepoint-doctor contributors" }]
 requires-python = ">=3.9"
 dependencies = ["numpy>=1.20"]
 classifiers = [
@@ -25,6 +25,18 @@ classifiers = [
 Homepage = "https://github.com/xang1234/changepoint-doctor"
 Repository = "https://github.com/xang1234/changepoint-doctor"
 Issues = "https://github.com/xang1234/changepoint-doctor/issues"
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7"]
+notebooks = ["jupyterlab>=4.0", "matplotlib>=3.7"]
+parity = ["pytest>=8.0", "ruptures>=1.1.9"]
+dev = [
+  "maturin>=1.7",
+  "pytest>=8.0",
+  "jupyterlab>=4.0",
+  "matplotlib>=3.7",
+  "ruptures>=1.1.9",
+]
 
 [tool.maturin]
 bindings = "pyo3"

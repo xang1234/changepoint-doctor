@@ -1,8 +1,8 @@
 # Configuration file for the Sphinx documentation builder.
 
 project = "changepoint-doctor"
-copyright = "2025, cpd-rs contributors"
-author = "cpd-rs contributors"
+copyright = "2026, changepoint-doctor contributors"
+author = "changepoint-doctor contributors"
 
 extensions = [
     "myst_nb",

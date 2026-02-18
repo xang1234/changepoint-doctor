@@ -12,8 +12,9 @@ python -c "import cpd; print(cpd.__version__)"
 
 ```bash
 cd cpd/python
-python -m pip install --upgrade pip maturin numpy
+python -m pip install --upgrade pip maturin
 maturin develop --release --manifest-path ../crates/cpd-python/Cargo.toml
+python -m pip install --upgrade ".[dev]"
 python -c "import cpd; print(cpd.__version__)"
 ```
 
@@ -21,6 +22,8 @@ If you are on Apple Silicon, run the architecture verification and troubleshooti
 steps in
 [`../docs/python_apple_silicon_toolchain.md`](../docs/python_apple_silicon_toolchain.md)
 before or after this build step when diagnosing linker/import failures.
+
+> Install/import naming: install with `python -m pip install changepoint-doctor`, then import with `import cpd` in Python. Optional compatibility alias: `import changepoint_doctor as cpd`.
 
 ## 3. Detect change points with high-level APIs
 
@@ -119,7 +122,7 @@ for result in outputs:
 try:
     fig = restored_outputs[0].plot(x, title="Quickstart breakpoint view")
 except ImportError:
-    # Plotting is optional; install with `python -m pip install matplotlib`.
+    # Plotting is optional; install with `python -m pip install "changepoint-doctor[plot]==0.0.2"`.
     fig = None
 ```
 
@@ -127,7 +130,7 @@ Compatibility + limitations to keep in mind:
 
 - `from_json(...)` accepts schema markers in the supported window (currently `1..=2`).
 - `to_json()` emits the current writer marker (currently `1`).
-- `plot()` is optional (`matplotlib`) and `plot(ax=...)` is univariate-only.
+- `plot()` is optional (`changepoint-doctor[plot]`) and `plot(ax=...)` is univariate-only.
 - If `segments` are absent in a result, pass explicit `values` to `plot(...)`.
 
 ## 6. Run provided examples
@@ -145,7 +148,7 @@ Example scripts are exercised in CI/smoke coverage via
 
 ```bash
 cd cpd/python
-python -m pip install jupyter matplotlib
+python -m pip install --upgrade "changepoint-doctor[notebooks]==0.0.2"
 jupyter lab
 ```
 

@@ -1,14 +1,16 @@
 cff-version: 1.2.0
-title: cpd-rs
+title: changepoint-doctor
 message: >-
-  If you use cpd-rs in academic work, please cite this software and the
-  algorithm papers listed below.
+  If you use changepoint-doctor in academic work, please cite this repository.
+  This project packages and extends upstream cpd-rs lineage for Python/CLI UX;
+  cite the algorithm papers listed below for method attribution.
 type: software
 authors:
-  - name: cpd-rs contributors
+  - name: changepoint-doctor contributors
 version: 0.1.0
 license: MIT OR Apache-2.0
-repository-code: https://github.com/cpd-rs/cpd-rs
+repository-code: https://github.com/xang1234/changepoint-doctor
+url: https://github.com/xang1234/changepoint-doctor
 references:
   - type: article
     title: Bayesian Online Changepoint Detection

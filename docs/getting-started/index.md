@@ -7,4 +7,5 @@ Get up and running with `changepoint-doctor` in minutes.
 
 installation
 quickstart
+cli
 ```

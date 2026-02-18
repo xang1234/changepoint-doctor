@@ -18,13 +18,27 @@ For local development from this repository:
 
 ```bash
 cd cpd/python
-python -m pip install --upgrade pip maturin numpy
+python -m pip install --upgrade pip maturin
 maturin develop --release --manifest-path ../crates/cpd-python/Cargo.toml
+python -m pip install --upgrade ".[dev]"
 ```
 
 Apple Silicon contributors should run the architecture checks and sanity path in
 [`../docs/python_apple_silicon_toolchain.md`](../docs/python_apple_silicon_toolchain.md)
 before debugging `pyo3`/linker errors.
+
+Common extras:
+
+- `plot`: `python -m pip install "changepoint-doctor[plot]==0.0.2"`
+- `notebooks`: `python -m pip install "changepoint-doctor[notebooks]==0.0.2"`
+- `parity`: `python -m pip install "changepoint-doctor[parity]==0.0.2"`
+- `dev`: `python -m pip install "changepoint-doctor[dev]==0.0.2"`
+
+`plot`/`notebooks`/`parity` extras only install optional Python tooling. They do
+not toggle Rust compile-time features. Rust features are set when building the
+extension (for example `maturin develop --features preprocess,serde ...`).
+
+> Install/import naming: install with `python -m pip install changepoint-doctor`, then import with `import cpd` in Python. Optional compatibility alias: `import changepoint_doctor as cpd`.
 
 ## API Map
 
@@ -45,7 +59,7 @@ To reproduce the benchmark snapshot used for this policy:
 
 ```bash
 cd cpd/python
-python -m pip install --upgrade pytest
+python -m pip install --upgrade ".[dev]"
 pytest -q tests/test_streaming_perf_contract.py
 ```
 
@@ -135,7 +149,7 @@ try:
     fig = restored.plot(x, title="Detected breakpoints")
 except ImportError:
     # Plotting remains optional.
-    # Install with: python -m pip install matplotlib
+    # Install with: python -m pip install "changepoint-doctor[plot]==0.0.2"
     fig = None
 ```
 
@@ -145,7 +159,7 @@ Compatibility + limitations:
   currently `1..=2` in `0.x`).
 - `to_json()` writes the current schema marker (currently `1`) and preserves additive
   unknown fields when round-tripping payloads.
-- `plot()` requires optional `matplotlib`.
+- `plot()` requires optional plotting dependencies (`changepoint-doctor[plot]`).
 - `plot(values=None, ...)` requires per-segment summaries in the result; if segments
   are unavailable, pass explicit `values`.
 - `plot(ax=...)` is supported only for univariate data (`diagnostics.d == 1`).
@@ -245,17 +259,17 @@ cpd/python/.venv/bin/python cpd/python/examples/plot_breakpoints.py --out /tmp/c
 Launch from `cpd/python`:
 
 ```bash
-python -m pip install jupyter matplotlib
+python -m pip install --upgrade "changepoint-doctor[notebooks]==0.0.2"
 jupyter lab
 ```
 
 ## Ruptures Parity Suite
 
-To run the differential parity suite locally (after installing `ruptures` in the active
-environment):
+To run the differential parity suite locally:
 
 ```bash
 cd cpd/python
+python -m pip install --upgrade ".[parity]"
 CPD_PARITY_PROFILE=smoke pytest -q tests/test_ruptures_parity.py
 CPD_PARITY_PROFILE=full CPD_PARITY_REPORT_OUT=/tmp/cpd-parity-report.json pytest -q tests/test_ruptures_parity.py
 ```
@@ -270,9 +284,28 @@ To run BOCPD parity against
 
 ```bash
 cd cpd/python
+python -m pip install --upgrade ".[parity]"
 python -m pip install "git+https://github.com/hildensia/bayesian_changepoint_detection.git@f3f8f03af0de7f4f98bd54c7ca0b5f6d0b0f6f8c"
 CPD_BOCPD_PARITY_PROFILE=smoke pytest -q tests/test_bocpd_bayesian_parity.py
 CPD_BOCPD_PARITY_PROFILE=full CPD_BOCPD_PARITY_REPORT_OUT=/tmp/cpd-bocpd-parity-report.json pytest -q tests/test_bocpd_bayesian_parity.py
+```
+
+## Extras Validation
+
+Run the metadata sanity checks for optional extras:
+
+```bash
+cd cpd/python
+pytest -q tests/test_optional_extras_contract.py
+```
+
+Optional install commands (one per workflow extra):
+
+```bash
+python -m pip install "changepoint-doctor[plot]==0.0.2"
+python -m pip install "changepoint-doctor[notebooks]==0.0.2"
+python -m pip install "changepoint-doctor[parity]==0.0.2"
+python -m pip install "changepoint-doctor[dev]==0.0.2"
 ```
 
 See [`../docs/parity_bocpd_bayesian.md`](../docs/parity_bocpd_bayesian.md) for
