@@ -632,11 +632,8 @@ fn run_penalized(
 
     let mut boundaries = Vec::new();
     let mut idx = target;
-    loop {
+    while idx > 0 {
         boundaries.push(positions[idx]);
-        if idx == 0 {
-            break;
-        }
         idx = back[idx].ok_or_else(|| {
             CpdError::resource_limit("internal backtrace failure in KernelCpd penalized run")
         })?;
@@ -916,5 +913,36 @@ mod tests {
             .expect("kernel detection should succeed");
         assert_eq!(result.breakpoints.len(), 2);
         assert_eq!(result.breakpoints[1], n);
+    }
+
+    #[test]
+    fn default_penalized_path_never_emits_zero_breakpoint() {
+        let n = 128usize;
+        let mut values = Vec::with_capacity(n);
+        for idx in 0..n {
+            values.push((idx as f64 * 0.07).sin() + 0.2 * (idx as f64 * 0.013).cos());
+        }
+        let view = make_view(values.as_slice(), n, 1);
+        let constraints = Constraints {
+            min_segment_len: 6,
+            max_change_points: Some(3),
+            ..Constraints::default()
+        };
+        let ctx = ExecutionContext::new(&constraints);
+
+        let result = KernelCpd::new(KernelCpdConfig::default())
+            .expect("default kernel detector should build")
+            .detect(&view, &ctx)
+            .expect("default penalized detection should succeed");
+
+        assert_eq!(
+            result.breakpoints.last().copied(),
+            Some(n),
+            "final breakpoint must be n"
+        );
+        assert!(
+            !result.breakpoints.contains(&0),
+            "kernel detector must never emit breakpoint 0"
+        );
     }
 }

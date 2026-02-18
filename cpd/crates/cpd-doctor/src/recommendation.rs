@@ -954,6 +954,7 @@ pub fn execute_ensemble(
     }
 
     let mut pipeline_results = Vec::<(PipelineSpec, OfflineChangePointResult)>::new();
+    let mut attempted_offline_count = 0usize;
     for (rank, recommendation) in recommendations.iter().take(selected_len).enumerate() {
         if recommendation.pipeline.is_online() {
             notes.push(format!(
@@ -963,6 +964,7 @@ pub fn execute_ensemble(
             continue;
         }
 
+        attempted_offline_count = attempted_offline_count.saturating_add(1);
         let effective_pipeline = pipeline_with_seed_override(&recommendation.pipeline, config.seed);
         match run_offline_pipeline(x, &effective_pipeline, ReproMode::Balanced) {
             Ok(result) => pipeline_results.push((effective_pipeline, result)),
@@ -974,23 +976,41 @@ pub fn execute_ensemble(
         }
     }
 
+    if attempted_offline_count == 0 {
+        return Err(CpdError::invalid_input(
+            "execute_ensemble requires at least one offline pipeline in selected recommendations",
+        ));
+    }
     if pipeline_results.is_empty() {
         return Err(CpdError::invalid_input(
             "execute_ensemble could not execute any offline pipelines",
+        ));
+    }
+    if pipeline_results.len() < attempted_offline_count {
+        notes.push(format!(
+            "ensemble run had {} failed offline pipeline(s)",
+            attempted_offline_count - pipeline_results.len()
         ));
     }
 
     #[derive(Clone, Debug)]
     struct Cluster {
         anchor: usize,
-        points: Vec<usize>,
-        pipelines: Vec<usize>,
+        representatives: Vec<(usize, usize)>,
     }
 
     fn median_index(points: &[usize]) -> usize {
         let mut sorted = points.to_vec();
         sorted.sort_unstable();
         sorted[sorted.len() / 2]
+    }
+
+    fn representative_anchor(representatives: &[(usize, usize)]) -> usize {
+        let points = representatives
+            .iter()
+            .map(|(_, point)| *point)
+            .collect::<Vec<_>>();
+        median_index(points.as_slice())
     }
 
     let mut clusters = Vec::<Cluster>::new();
@@ -1008,35 +1028,50 @@ pub fn execute_ensemble(
 
             if let Some(cluster_idx) = best_cluster {
                 let cluster = &mut clusters[cluster_idx];
-                cluster.points.push(cp);
-                if !cluster.pipelines.contains(&pipeline_idx) {
-                    cluster.pipelines.push(pipeline_idx);
+                if let Some((_, representative)) = cluster
+                    .representatives
+                    .iter_mut()
+                    .find(|(idx, _)| *idx == pipeline_idx)
+                {
+                    let current_distance = (*representative).abs_diff(cluster.anchor);
+                    let new_distance = cp.abs_diff(cluster.anchor);
+                    if new_distance < current_distance
+                        || (new_distance == current_distance && cp < *representative)
+                    {
+                        *representative = cp;
+                    }
+                } else {
+                    cluster.representatives.push((pipeline_idx, cp));
                 }
-                cluster.anchor = median_index(cluster.points.as_slice());
+                cluster.anchor = representative_anchor(cluster.representatives.as_slice());
             } else {
                 clusters.push(Cluster {
                     anchor: cp,
-                    points: vec![cp],
-                    pipelines: vec![pipeline_idx],
+                    representatives: vec![(pipeline_idx, cp)],
                 });
             }
         }
     }
 
-    let pipeline_count = pipeline_results.len();
+    let successful_pipeline_count = pipeline_results.len();
     let mut breakpoints = clusters
         .into_iter()
         .filter_map(|cluster| {
-            let votes = cluster.pipelines.len();
+            let votes = cluster.representatives.len();
             if votes == 0 {
                 return None;
             }
-            let consensus_score = votes as f64 / pipeline_count as f64;
+            let consensus_score = votes as f64 / attempted_offline_count as f64;
             if consensus_score + f64::EPSILON < config.min_consensus_ratio {
                 return None;
             }
+            let representative_points = cluster
+                .representatives
+                .iter()
+                .map(|(_, point)| *point)
+                .collect::<Vec<_>>();
             Some(EnsembleBreakpoint {
-                index: median_index(cluster.points.as_slice()),
+                index: median_index(representative_points.as_slice()),
                 consensus_score,
                 votes,
             })
@@ -1045,8 +1080,8 @@ pub fn execute_ensemble(
     breakpoints.sort_by(|left, right| left.index.cmp(&right.index));
 
     notes.push(format!(
-        "ensemble_executed={} pipeline(s), tolerance=±{}, min_consensus_ratio={}",
-        pipeline_count, config.tolerance, config.min_consensus_ratio
+        "ensemble_executed={} successful / {} attempted offline pipeline(s), tolerance=±{}, min_consensus_ratio={}",
+        successful_pipeline_count, attempted_offline_count, config.tolerance, config.min_consensus_ratio
     ));
     notes.push(format!(
         "ensemble_consensus_breakpoints={}",

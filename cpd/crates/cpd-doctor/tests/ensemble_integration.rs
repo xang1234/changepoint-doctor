@@ -7,7 +7,7 @@ use cpd_doctor::{
     CostConfig, DetectorConfig, EnsembleConfig, Explanation, OfflineDetectorConfig, PipelineSpec,
     Recommendation, ResourceEstimate, execute_ensemble,
 };
-use cpd_offline::{BinSegConfig, PeltConfig, WbsConfig};
+use cpd_offline::{BinSegConfig, FpopConfig, PeltConfig, WbsConfig};
 
 fn stopping_from_detector(detector: &OfflineDetectorConfig) -> Stopping {
     match detector {
@@ -215,5 +215,68 @@ fn execute_ensemble_filters_single_vote_breakpoints_with_high_threshold() {
             .iter()
             .any(|bp| bp.index.abs_diff(split) <= 16),
         "expected at least one consensus breakpoint near true split"
+    );
+}
+
+#[test]
+fn execute_ensemble_uses_attempted_offline_count_for_consensus_ratio() {
+    let n = 180usize;
+    let split = 90usize;
+    let values = step_signal(n, split);
+    let view = make_view(values.as_slice(), n);
+
+    let constraints = Constraints {
+        min_segment_len: 8,
+        max_change_points: Some(1),
+        ..Constraints::default()
+    };
+
+    let mut failing = recommendation_for(
+        OfflineDetectorConfig::Fpop(FpopConfig {
+            stopping: Stopping::KnownK(1),
+            ..FpopConfig::default()
+        }),
+        constraints.clone(),
+        None,
+    );
+    // FPOP currently supports only L2; force a deterministic execution failure.
+    failing.pipeline.cost = CostConfig::Normal;
+
+    let recommendations = vec![
+        recommendation_for(
+            OfflineDetectorConfig::Pelt(PeltConfig {
+                stopping: Stopping::KnownK(1),
+                ..PeltConfig::default()
+            }),
+            constraints,
+            None,
+        ),
+        failing,
+    ];
+
+    let config = EnsembleConfig {
+        top_k: 2,
+        tolerance: 8,
+        min_consensus_ratio: 0.6,
+        seed: None,
+    };
+    let report = execute_ensemble(&view, recommendations.as_slice(), &config)
+        .expect("ensemble execution should succeed with one valid pipeline");
+
+    assert_eq!(
+        report.pipeline_results.len(),
+        1,
+        "exactly one offline pipeline should succeed"
+    );
+    assert!(
+        report.breakpoints.is_empty(),
+        "single successful vote out of two attempted offline pipelines must not pass ratio 0.6"
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("failed offline pipeline")),
+        "ensemble notes should report failed pipeline attempts"
     );
 }
