@@ -73,7 +73,7 @@ low_level = cpd.detect_offline(
         "deseasonalize": {"method": "differencing", "period": 2},
         "winsorize": {},  # defaults to lower_quantile=0.01, upper_quantile=0.99
         "robust_scale": {},  # defaults to mad_epsilon=1e-9, normal_consistency=1.4826
-    },  # optional; requires preprocess feature
+    },  # optional preprocessing pipeline
     repro_mode="balanced",
     return_diagnostics=True,
 )
@@ -85,6 +85,10 @@ print("Cost model:", low_level.diagnostics.cost_model)
 
 `preprocess` is strictly validated: unsupported keys or invalid method/parameter
 combinations raise `ValueError`.
+
+`preprocess` is available in default PyPI wheels. For source builds, keep
+`preprocess` in your enabled Rust feature set (for example, default
+`maturin develop` in this repo or explicit `--features extension-module,serde,preprocess`).
 
 ## 5. Serialize results and plot breakpoints
 

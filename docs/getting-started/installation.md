@@ -97,7 +97,7 @@ The Rust workspace supports feature flags that enable optional capabilities:
 | `preprocess` | Signal preprocessing (detrend, deseasonalize, winsorize, scale) |
 | `repro-strict` | Strict reproducibility mode with deterministic numeric paths |
 
-Default PyPI wheels are BLAS-free. The `serde` feature is enabled by default in the Python extension.
+Default PyPI wheels are BLAS-free. The `serde` and `preprocess` features are enabled by default in the Python extension.
 
 ## Wheel platform matrix
 

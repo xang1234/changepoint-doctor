@@ -385,10 +385,20 @@ def test_detect_offline_rejects_pipeline_fpop_with_non_l2_cost() -> None:
         cpd.detect_offline(x, pipeline=pipeline)
 
 
-def test_detect_offline_rejects_preprocess_without_feature() -> None:
+def test_detect_offline_accepts_preprocess_in_default_install_path() -> None:
     x = _three_regime_signal()
-    with pytest.raises(ValueError, match="preprocess feature"):
-        cpd.detect_offline(x, stopping={"n_bkps": 2}, preprocess={"winsorize": {}})
+    result = cpd.detect_offline(
+        x,
+        detector="pelt",
+        cost="l2",
+        stopping={"n_bkps": 2},
+        preprocess={
+            "detrend": {"method": "linear"},
+            "winsorize": {},
+        },
+        repro_mode="balanced",
+    )
+    assert result.breakpoints == [40, 80, 120]
 
 
 def test_detect_offline_error_paths_are_clear() -> None:

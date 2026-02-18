@@ -216,6 +216,7 @@ cargo bench -p cpd-bench --bench offline_segneigh
 
 `detect_offline(..., preprocess=...)` validates keys and method payloads.
 Unknown preprocess stage keys fail with `ValueError`.
+Default PyPI wheels include preprocess support.
 
 Canonical shape:
 

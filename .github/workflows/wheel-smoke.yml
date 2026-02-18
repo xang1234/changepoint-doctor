@@ -164,9 +164,17 @@ jobs:
           p = cpd.Pelt(model="l2").fit(x).predict(n_bkps=1)
           b = cpd.Binseg(model="l2").fit(x).predict(n_bkps=1)
           low = cpd.detect_offline(x, detector="pelt", cost="l2", stopping={"n_bkps": 1})
+          low_preprocess = cpd.detect_offline(
+              x,
+              detector="pelt",
+              cost="l2",
+              stopping={"n_bkps": 1},
+              preprocess={"winsorize": {}, "robust_scale": {}},
+          )
           assert p.breakpoints == [50, 100]
           assert b.breakpoints == [50, 100]
           assert low.breakpoints == [50, 100]
+          assert low_preprocess.breakpoints == [50, 100]
           assert low.diagnostics.blas_backend is None
           PY
 
@@ -237,9 +245,17 @@ jobs:
           p = cpd.Pelt(model="l2").fit(x).predict(n_bkps=1)
           b = cpd.Binseg(model="l2").fit(x).predict(n_bkps=1)
           low = cpd.detect_offline(x, detector="pelt", cost="l2", stopping={"n_bkps": 1})
+          low_preprocess = cpd.detect_offline(
+              x,
+              detector="pelt",
+              cost="l2",
+              stopping={"n_bkps": 1},
+              preprocess={"winsorize": {}, "robust_scale": {}},
+          )
           assert p.breakpoints == [50, 100]
           assert b.breakpoints == [50, 100]
           assert low.breakpoints == [50, 100]
+          assert low_preprocess.breakpoints == [50, 100]
           assert low.diagnostics.blas_backend is None
           PY
 
