@@ -947,7 +947,7 @@ mod tests {
         BudgetMode, Constraints, DTypeView, ExecutionContext, MemoryLayout, MissingPolicy,
         OfflineDetector, Penalty, ProgressSink, ReproMode, Stopping, TimeIndex, TimeSeriesView,
     };
-    use cpd_costs::{CostAR, CostL2Mean, CostNormalFullCov, CostNormalMeanVar};
+    use cpd_costs::{CostAR, CostL2Mean, CostNormalFullCov, CostNormalMeanVar, CostStudentT};
     use std::thread;
     use std::time::Duration;
 
@@ -1153,6 +1153,54 @@ mod tests {
         let ctx = ExecutionContext::new(&constraints);
         let result = detector.detect(&view, &ctx).expect("detect should succeed");
         assert_eq!(result.breakpoints, vec![10, 20]);
+    }
+
+    #[test]
+    fn student_t_cost_detects_mean_shift_with_outliers() {
+        let detector = Pelt::new(
+            CostStudentT::default(),
+            PeltConfig {
+                stopping: Stopping::KnownK(1),
+                params_per_segment: 3,
+                cancel_check_every: 8,
+            },
+        )
+        .expect("config should be valid");
+
+        let breakpoint = 64;
+        let n = 128;
+        let mut values = Vec::with_capacity(n);
+        for t in 0..n {
+            let base = if t < breakpoint { 0.0 } else { 4.0 };
+            values.push(base);
+        }
+        values[17] = 45.0;
+        values[44] = -52.0;
+        values[79] = 58.0;
+        values[111] = -61.0;
+
+        let view = make_f64_view(
+            &values,
+            values.len(),
+            1,
+            MemoryLayout::CContiguous,
+            MissingPolicy::Error,
+        );
+
+        let constraints = Constraints {
+            min_segment_len: 8,
+            max_change_points: Some(1),
+            ..Constraints::default()
+        };
+        let ctx = ExecutionContext::new(&constraints);
+        let result = detector.detect(&view, &ctx).expect("detect should succeed");
+        assert_eq!(result.change_points.len(), 1);
+        let detected = result.change_points[0];
+        assert!(
+            detected.abs_diff(breakpoint) <= 6,
+            "expected change point near {breakpoint}, got {detected}"
+        );
+        assert_eq!(result.breakpoints.last().copied(), Some(n));
     }
 
     #[test]

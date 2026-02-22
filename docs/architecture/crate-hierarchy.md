@@ -62,7 +62,7 @@ Foundation types shared across the workspace:
 
 All cost model implementations:
 - `CostModel` trait and `CachedCost<C>` wrapper
-- Implementations: `CostL2Mean`, `CostL1Median`, `CostNormalMeanVar`, `CostNormalFullCov`, `CostNIGMarginal`, `CostAR`, `CostBernoulli`, `CostPoissonRate`, `CostRank`, `CostCosine`
+- Implementations: `CostL2Mean`, `CostL1Median`, `CostNormalMeanVar`, `CostNormalFullCov`, `CostNIGMarginal`, `CostStudentT`, `CostAR`, `CostBernoulli`, `CostPoissonRate`, `CostRank`, `CostCosine`
 
 ### `cpd-preprocess`
 

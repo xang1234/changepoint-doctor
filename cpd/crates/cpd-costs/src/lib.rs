@@ -13,6 +13,7 @@ pub mod nig;
 pub mod normal;
 pub mod poisson;
 pub mod rank;
+pub mod student_t;
 
 pub use ar::{ARCache, CostAR};
 pub use bernoulli::{BernoulliCache, CostBernoulli};
@@ -26,6 +27,7 @@ pub use nig::{CostNIGMarginal, NIGCache, NIGPrior};
 pub use normal::{CostNormalFullCov, CostNormalMeanVar, NormalCache, NormalFullCovCache};
 pub use poisson::{CostPoissonRate, PoissonCache};
 pub use rank::{CostRank, RankCache};
+pub use student_t::{CostStudentT, StudentTCache, StudentTScaleMode};
 
 /// Built-in cost model namespace placeholder.
 pub fn crate_name() -> &'static str {

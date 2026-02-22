@@ -5,7 +5,7 @@
 use cpd_core::{CachePolicy, MemoryLayout, MissingPolicy, TimeIndex, TimeSeriesView};
 use cpd_costs::{
     CostAR, CostBernoulli, CostL1Median, CostL2Mean, CostLinear, CostModel, CostNIGMarginal,
-    CostNormalMeanVar, CostPoissonRate, CostRank,
+    CostNormalMeanVar, CostPoissonRate, CostRank, CostStudentT,
 };
 
 const N: usize = 96;
@@ -128,6 +128,7 @@ fn all_v1_costs_match_univariate_sum_for_d8_and_d16() {
     let linear = CostLinear::default();
     let ar = CostAR::default();
     let rank = CostRank::default();
+    let student_t = CostStudentT::default();
 
     for d in [8_usize, 16] {
         let continuous = continuous_values(N, d);
@@ -145,6 +146,14 @@ fn all_v1_costs_match_univariate_sum_for_d8_and_d16() {
         assert_additive_multivariate("CostLinear", &linear, continuous.as_slice(), N, d, 1e-8);
         assert_additive_multivariate("CostAR", &ar, continuous.as_slice(), N, d, 1e-9);
         assert_additive_multivariate("CostRank", &rank, continuous.as_slice(), N, d, 1e-10);
+        assert_additive_multivariate(
+            "CostStudentT",
+            &student_t,
+            continuous.as_slice(),
+            N,
+            d,
+            1e-9,
+        );
 
         let counts = count_values(N, d);
         assert_additive_multivariate("CostPoissonRate", &poisson, counts.as_slice(), N, d, 1e-12);
