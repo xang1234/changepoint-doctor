@@ -155,6 +155,22 @@ def test_detect_offline_matches_class_api_for_pelt_binseg_and_fpop() -> None:
     assert fpop_low.breakpoints == fpop_class.breakpoints
 
 
+def test_pelt_and_binseg_support_student_t_model() -> None:
+    x = _three_regime_signal()
+    x[12] = 40.0
+    x[74] = -35.0
+
+    pelt = cpd.Pelt(model="student_t", min_segment_len=2).fit(x).predict(n_bkps=2)
+    binseg = cpd.Binseg(model="student_t", min_segment_len=2).fit(x).predict(n_bkps=2)
+
+    for result in (pelt, binseg):
+        assert result.breakpoints[-1] == len(x)
+        assert len(result.change_points) == 2
+        assert abs(result.change_points[0] - 40) <= 6
+        assert abs(result.change_points[1] - 80) <= 6
+        assert result.diagnostics.cost_model == "student_t"
+
+
 def test_detector_outputs_roundtrip_through_result_json_api() -> None:
     x = _three_regime_signal()
     outputs = [
@@ -398,6 +414,24 @@ def test_detect_offline_rejects_pipeline_fpop_with_non_l2_cost() -> None:
     with pytest.raises(
         ValueError,
         match=r"(pipeline\.detector='fpop' requires pipeline\.cost='l2'|detector=fpop requires cost=l2)",
+    ):
+        cpd.detect_offline(x, pipeline=pipeline)
+
+
+def test_detect_offline_rejects_student_t_for_unsupported_detectors() -> None:
+    x = _three_regime_signal()
+
+    with pytest.raises(ValueError, match=r"supports detector='pelt' or 'binseg'"):
+        cpd.detect_offline(x, detector="segneigh", cost="student_t", stopping={"n_bkps": 2})
+
+    pipeline = {
+        "detector": {"kind": "wbs"},
+        "cost": "student_t",
+        "stopping": {"n_bkps": 2},
+    }
+    with pytest.raises(
+        ValueError,
+        match=r"pipeline\.cost='student_t' currently supports pipeline\.detector='pelt' or 'binseg'",
     ):
         cpd.detect_offline(x, pipeline=pipeline)
 

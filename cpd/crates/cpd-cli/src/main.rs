@@ -148,6 +148,7 @@ enum CostArg {
     NormalFullCov,
     Nig,
     Rank,
+    StudentT,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,8 +198,9 @@ impl CostArg {
             "normal_full_cov" | "normal_fullcov" | "normalfullcov" => Ok(Self::NormalFullCov),
             "nig" => Ok(Self::Nig),
             "rank" => Ok(Self::Rank),
+            "student_t" | "studentt" | "student-t" => Ok(Self::StudentT),
             _ => Err(CliError::invalid_input(format!(
-                "invalid --cost '{raw}'; expected one of: ar, cosine, l1_median, l2, normal, normal_full_cov, nig, rank"
+                "invalid --cost '{raw}'; expected one of: ar, cosine, l1_median, l2, normal, normal_full_cov, nig, rank, student_t"
             ))),
         }
     }
@@ -951,7 +953,7 @@ fn print_command_help(command: &str) -> Result<(), CliError> {
     match command {
         "detect" => {
             println!(
-                "USAGE:\n  cpd detect --input <path> [OPTIONS]\n\nOPTIONS:\n  --algorithm <pelt|binseg|fpop|segneigh|wbs>                          Default: pelt\n  --cost <ar|cosine|l1_median|l2|normal|normal_full_cov|nig|rank>      Default: l2\n  --penalty <bic|aic|manual>                                            Default: bic\n  --penalty-value <float>                                               Required when --penalty=manual\n  --k <usize>                                                           Use KnownK stopping\n  --seed <u64>                                                          WBS seed only\n  --min-segment-len <usize>\n  --max-change-points <usize>\n  --max-depth <usize>\n  --jump <usize>\n  --input <path>                                                        Required (.csv or .npy)\n  --output <path>                                                       Write JSON output to file\n  --pretty-json                                                         Pretty-print JSON output (default)\n  --compact-json                                                        Emit compact one-line JSON"
+                "USAGE:\n  cpd detect --input <path> [OPTIONS]\n\nOPTIONS:\n  --algorithm <pelt|binseg|fpop|segneigh|wbs>                                    Default: pelt\n  --cost <ar|cosine|l1_median|l2|normal|normal_full_cov|nig|rank|student_t>      Default: l2\n  --penalty <bic|aic|manual>                                                      Default: bic\n  --penalty-value <float>                                                         Required when --penalty=manual\n  --k <usize>                                                                     Use KnownK stopping\n  --seed <u64>                                                                    WBS seed only\n  --min-segment-len <usize>\n  --max-change-points <usize>\n  --max-depth <usize>\n  --jump <usize>\n  --input <path>                                                                  Required (.csv or .npy)\n  --output <path>                                                                 Write JSON output to file\n  --pretty-json                                                                   Pretty-print JSON output (default)\n  --compact-json                                                                  Emit compact one-line JSON"
             );
             Ok(())
         }
@@ -1188,6 +1190,17 @@ fn build_detect_pipeline(args: &DetectArgs) -> Result<PipelineSpec, CliError> {
         }
     };
 
+    if matches!(args.cost, CostArg::StudentT)
+        && !matches!(
+            &detector,
+            OfflineDetectorConfig::Pelt(_) | OfflineDetectorConfig::BinSeg(_)
+        )
+    {
+        return Err(CliError::invalid_input(
+            "--cost=student_t currently supports --algorithm=pelt or --algorithm=binseg",
+        ));
+    }
+
     Ok(PipelineSpec {
         detector: DetectorConfig::Offline(detector),
         cost: match args.cost {
@@ -1199,6 +1212,7 @@ fn build_detect_pipeline(args: &DetectArgs) -> Result<PipelineSpec, CliError> {
             CostArg::NormalFullCov => CostConfig::NormalFullCov,
             CostArg::Nig => CostConfig::Nig,
             CostArg::Rank => CostConfig::Rank,
+            CostArg::StudentT => CostConfig::StudentT,
         },
         preprocess: None,
         constraints,
@@ -1756,11 +1770,7 @@ fn parse_simple_pipeline_spec(value: &Value) -> Result<PipelineSpec, CliError> {
         ));
     }
 
-    if matches!(&detector, OfflineDetectorConfig::Fpop(_)) && !matches!(cost, CostConfig::L2) {
-        return Err(CliError::invalid_input(
-            "pipeline.detector='fpop' requires pipeline.cost='l2'",
-        ));
-    }
+    validate_offline_detector_cost(&detector, cost)?;
 
     apply_pipeline_controls(&mut detector, &stopping, seed)?;
 
@@ -1775,15 +1785,33 @@ fn parse_simple_pipeline_spec(value: &Value) -> Result<PipelineSpec, CliError> {
 }
 
 fn validate_pipeline_spec(pipeline: &PipelineSpec) -> Result<(), CliError> {
-    if matches!(
-        &pipeline.detector,
-        DetectorConfig::Offline(OfflineDetectorConfig::Fpop(_))
-    ) && !matches!(pipeline.cost, CostConfig::L2)
-    {
+    if let DetectorConfig::Offline(detector) = &pipeline.detector {
+        validate_offline_detector_cost(detector, pipeline.cost)?;
+    }
+    Ok(())
+}
+
+fn validate_offline_detector_cost(
+    detector: &OfflineDetectorConfig,
+    cost: CostConfig,
+) -> Result<(), CliError> {
+    if matches!(detector, OfflineDetectorConfig::Fpop(_)) && !matches!(cost, CostConfig::L2) {
         return Err(CliError::invalid_input(
             "pipeline.detector='fpop' requires pipeline.cost='l2'",
         ));
     }
+
+    if matches!(cost, CostConfig::StudentT)
+        && !matches!(
+            detector,
+            OfflineDetectorConfig::Pelt(_) | OfflineDetectorConfig::BinSeg(_)
+        )
+    {
+        return Err(CliError::invalid_input(
+            "pipeline.cost='student_t' currently supports pipeline.detector='pelt' or 'binseg'",
+        ));
+    }
+
     Ok(())
 }
 
@@ -2188,10 +2216,11 @@ fn parse_cost_value(value: Option<&Value>, context: &str) -> Result<CostConfig, 
         "normal_full_cov" | "normal_fullcov" | "normalfullcov" => CostConfig::NormalFullCov,
         "nig" => CostConfig::Nig,
         "rank" => CostConfig::Rank,
+        "student_t" | "studentt" | "student-t" => CostConfig::StudentT,
         "none" => CostConfig::None,
         _ => {
             return Err(CliError::invalid_input(format!(
-                "unsupported {context} '{raw}'; expected one of: 'ar', 'cosine', 'l1_median', 'l2', 'normal', 'normal_full_cov', 'nig', 'rank', 'none'"
+                "unsupported {context} '{raw}'; expected one of: 'ar', 'cosine', 'l1_median', 'l2', 'normal', 'normal_full_cov', 'nig', 'rank', 'student_t', 'none'"
             )));
         }
     };
@@ -2762,6 +2791,44 @@ mod tests {
     }
 
     #[test]
+    fn detect_pipeline_accepts_student_t_for_binseg() {
+        let tokens = vec![
+            "--input".to_string(),
+            "/tmp/series.csv".to_string(),
+            "--algorithm".to_string(),
+            "binseg".to_string(),
+            "--cost".to_string(),
+            "student_t".to_string(),
+            "--k".to_string(),
+            "2".to_string(),
+        ];
+        let args = parse_detect_args(tokens.as_slice()).expect("detect args should parse");
+        let pipeline = build_detect_pipeline(&args).expect("binseg+student_t should build");
+        assert!(matches!(pipeline.cost, CostConfig::StudentT));
+    }
+
+    #[test]
+    fn detect_pipeline_rejects_student_t_for_wbs() {
+        let tokens = vec![
+            "--input".to_string(),
+            "/tmp/series.csv".to_string(),
+            "--algorithm".to_string(),
+            "wbs".to_string(),
+            "--cost".to_string(),
+            "student_t".to_string(),
+            "--k".to_string(),
+            "2".to_string(),
+        ];
+        let args = parse_detect_args(tokens.as_slice()).expect("detect args should parse");
+        let err = build_detect_pipeline(&args).expect_err("wbs+student_t should fail");
+        assert!(
+            err.to_string()
+                .contains("--cost=student_t currently supports --algorithm=pelt or --algorithm=binseg"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
     fn detect_pipeline_rejects_fpop_with_non_l2_cost() {
         let tokens = vec![
             "--input".to_string(),
@@ -2809,6 +2876,36 @@ mod tests {
         "#;
         let pipeline = parse_pipeline_spec_document(raw).expect("pipeline should parse");
         assert!(matches!(pipeline.cost, CostConfig::NormalFullCov));
+    }
+
+    #[test]
+    fn pipeline_parser_accepts_student_t_for_binseg() {
+        let raw = r#"
+        {
+          "detector": {"kind": "binseg"},
+          "cost": "student_t",
+          "stopping": {"n_bkps": 2}
+        }
+        "#;
+        let pipeline = parse_pipeline_spec_document(raw).expect("pipeline should parse");
+        assert!(matches!(pipeline.cost, CostConfig::StudentT));
+    }
+
+    #[test]
+    fn pipeline_parser_rejects_student_t_for_wbs() {
+        let raw = r#"
+        {
+          "detector": {"kind": "wbs"},
+          "cost": "student_t",
+          "stopping": {"n_bkps": 2}
+        }
+        "#;
+        let err = parse_pipeline_spec_document(raw).expect_err("wbs+student_t should fail");
+        assert!(
+            err.to_string()
+                .contains("pipeline.cost='student_t' currently supports pipeline.detector='pelt' or 'binseg'"),
+            "unexpected error message: {err}"
+        );
     }
 
     #[test]

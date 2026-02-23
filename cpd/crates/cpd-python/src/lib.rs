@@ -17,7 +17,8 @@ use cpd_core::{
     Penalty, ReproMode, Stopping, TimeSeriesView,
 };
 use cpd_costs::{
-    CostCosine, CostL1Median, CostL2Mean, CostNormalFullCov, CostNormalMeanVar, CostRank,
+    CostCosine, CostL1Median, CostL2Mean, CostModel, CostNormalFullCov, CostNormalMeanVar,
+    CostRank, CostStudentT,
 };
 use cpd_doctor::{
     CostConfig as DoctorCostConfig, DetectorConfig as DoctorDetectorConfig,
@@ -188,6 +189,7 @@ enum PyCostModel {
     Normal,
     NormalFullCov,
     Rank,
+    StudentT,
 }
 
 impl PyCostModel {
@@ -199,8 +201,9 @@ impl PyCostModel {
             "normal" => Ok(Self::Normal),
             "normal_full_cov" | "normal_fullcov" | "normalfullcov" => Ok(Self::NormalFullCov),
             "rank" => Ok(Self::Rank),
+            "student_t" | "studentt" | "student-t" => Ok(Self::StudentT),
             _ => Err(PyValueError::new_err(format!(
-                "unsupported model '{model}'; expected one of: 'cosine', 'l1_median', 'l2', 'normal', 'normal_full_cov', 'rank'"
+                "unsupported model '{model}'; expected one of: 'cosine', 'l1_median', 'l2', 'normal', 'normal_full_cov', 'rank', 'student_t'"
             ))),
         }
     }
@@ -213,6 +216,7 @@ impl PyCostModel {
             Self::Normal => "normal",
             Self::NormalFullCov => "normal_full_cov",
             Self::Rank => "rank",
+            Self::StudentT => "student_t",
         }
     }
 }
@@ -1413,9 +1417,10 @@ fn parse_pipeline_cost(value: &Bound<'_, PyAny>) -> PyResult<DoctorCostConfig> {
         }
         "nig" => Ok(DoctorCostConfig::Nig),
         "rank" => Ok(DoctorCostConfig::Rank),
+        "student_t" | "studentt" | "student-t" => Ok(DoctorCostConfig::StudentT),
         "none" => Ok(DoctorCostConfig::None),
         _ => Err(PyValueError::new_err(format!(
-            "unsupported pipeline.cost '{raw}'; expected one of: 'cosine', 'l1_median', 'l2', 'normal', 'normal_full_cov', 'nig', 'rank', 'none'"
+            "unsupported pipeline.cost '{raw}'; expected one of: 'cosine', 'l1_median', 'l2', 'normal', 'normal_full_cov', 'nig', 'rank', 'student_t', 'none'"
         ))),
     }
 }
@@ -1446,7 +1451,7 @@ fn parse_pipeline_spec(pipeline: &Bound<'_, PyAny>) -> PyResult<DoctorPipelineSp
     };
     if matches!(cost, DoctorCostConfig::None) {
         return Err(PyValueError::new_err(
-            "detect_offline requires pipeline.cost to be one of: 'cosine', 'l1_median', 'l2', 'normal', 'normal_full_cov', 'nig', 'rank'",
+            "detect_offline requires pipeline.cost to be one of: 'cosine', 'l1_median', 'l2', 'normal', 'normal_full_cov', 'nig', 'rank', 'student_t'",
         ));
     }
     if matches!(&detector, DoctorOfflineDetectorConfig::Fpop(_))
@@ -1454,6 +1459,16 @@ fn parse_pipeline_spec(pipeline: &Bound<'_, PyAny>) -> PyResult<DoctorPipelineSp
     {
         return Err(PyValueError::new_err(
             "pipeline.detector='fpop' requires pipeline.cost='l2'",
+        ));
+    }
+    if matches!(cost, DoctorCostConfig::StudentT)
+        && !matches!(
+            &detector,
+            DoctorOfflineDetectorConfig::Pelt(_) | DoctorOfflineDetectorConfig::BinSeg(_)
+        )
+    {
+        return Err(PyValueError::new_err(
+            "pipeline.cost='student_t' currently supports pipeline.detector='pelt' or 'binseg'",
         ));
     }
     let constraints = parse_constraints(dict.get_item("constraints")?.as_ref())?;
@@ -1771,6 +1786,15 @@ fn detect_with_view(
             let detector = OfflinePelt::new(CostRank::new(repro_mode), config)?;
             detector.detect(view, &ctx)
         }
+        (PyDetectorKind::Pelt, PyCostModel::StudentT) => {
+            let config = PeltConfig {
+                stopping,
+                params_per_segment: CostStudentT::new(repro_mode).penalty_params_per_segment(),
+                cancel_check_every: 1000,
+            };
+            let detector = OfflinePelt::new(CostStudentT::new(repro_mode), config)?;
+            detector.detect(view, &ctx)
+        }
         (PyDetectorKind::Binseg, PyCostModel::L2) => {
             let config = BinSegConfig {
                 stopping,
@@ -1823,6 +1847,15 @@ fn detect_with_view(
                 cancel_check_every: 1000,
             };
             let detector = OfflineBinSeg::new(CostRank::new(repro_mode), config)?;
+            detector.detect(view, &ctx)
+        }
+        (PyDetectorKind::Binseg, PyCostModel::StudentT) => {
+            let config = BinSegConfig {
+                stopping,
+                params_per_segment: CostStudentT::new(repro_mode).penalty_params_per_segment(),
+                cancel_check_every: 1000,
+            };
+            let detector = OfflineBinSeg::new(CostStudentT::new(repro_mode), config)?;
             detector.detect(view, &ctx)
         }
         (PyDetectorKind::Fpop, PyCostModel::L2) => {
@@ -1888,9 +1921,16 @@ fn detect_with_view(
             | PyCostModel::L1Median
             | PyCostModel::Normal
             | PyCostModel::NormalFullCov
-            | PyCostModel::Rank,
+            | PyCostModel::Rank
+            | PyCostModel::StudentT,
         ) => Err(CpdError::invalid_input(
             "detector='fpop' requires cost='l2'",
+        )),
+        (
+            PyDetectorKind::SegNeigh,
+            PyCostModel::StudentT,
+        ) => Err(CpdError::invalid_input(
+            "cost='student_t' currently supports detector='pelt' or 'binseg'",
         )),
     }
 }
@@ -2901,8 +2941,9 @@ fn _cpd_rs(module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        _cpd_rs, PyBinseg, PyFpop, PyPelt, SmokeDetector, UPDATE_MANY_GIL_RELEASE_MIN_WORK_ITEMS,
-        parse_pipeline_spec, should_release_gil_for_update_many, smoke_detect,
+        _cpd_rs, DoctorCostConfig, PyBinseg, PyFpop, PyPelt, SmokeDetector,
+        UPDATE_MANY_GIL_RELEASE_MIN_WORK_ITEMS, parse_pipeline_spec,
+        should_release_gil_for_update_many, smoke_detect,
     };
     use pyo3::Python;
     use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -3226,6 +3267,67 @@ mod tests {
     }
 
     #[test]
+    fn detect_offline_supports_student_t_cost_with_pelt_and_binseg() {
+        with_python(|py| {
+            let module = PyModule::new(py, "_cpd_rs").expect("module should be created");
+            _cpd_rs(&module).expect("module registration should succeed");
+
+            let locals = PyDict::new(py);
+            locals
+                .set_item("cpd_rs", &module)
+                .expect("locals should accept module");
+            run_python(
+                py,
+                "import numpy as np\nx = np.array([0.,0.,0.,0.,0.,0.,5.,5.,5.,5.,5.,5.], dtype=np.float64)\npelt_result = cpd_rs.detect_offline(x, detector='pelt', cost='student_t', stopping={'n_bkps': 1})\nbinseg_result = cpd_rs.detect_offline(x, detector='binseg', cost='student_t', stopping={'n_bkps': 1})",
+                None,
+                Some(&locals),
+            )
+            .expect("student_t should run for pelt/binseg");
+
+            let pelt_result = locals
+                .get_item("pelt_result")
+                .expect("locals lookup should succeed")
+                .expect("pelt_result should exist");
+            let binseg_result = locals
+                .get_item("binseg_result")
+                .expect("locals lookup should succeed")
+                .expect("binseg_result should exist");
+
+            for result in [&pelt_result, &binseg_result] {
+                let diagnostics = result
+                    .getattr("diagnostics")
+                    .expect("diagnostics should exist");
+                let cost_model: String = diagnostics
+                    .getattr("cost_model")
+                    .expect("cost_model should exist")
+                    .extract()
+                    .expect("cost_model should extract");
+                assert_eq!(cost_model, "student_t");
+            }
+        });
+    }
+
+    #[test]
+    fn detect_offline_rejects_student_t_for_segneigh() {
+        with_python(|py| {
+            let module = PyModule::new(py, "_cpd_rs").expect("module should be created");
+            _cpd_rs(&module).expect("module registration should succeed");
+
+            let locals = PyDict::new(py);
+            locals
+                .set_item("cpd_rs", &module)
+                .expect("locals should accept module");
+            run_python(
+                py,
+                "import numpy as np\nx = np.array([0.,0.,0.,0.,5.,5.,5.,5.], dtype=np.float64)\ntry:\n    cpd_rs.detect_offline(x, detector='segneigh', cost='student_t', stopping={'n_bkps': 1})\n    raise AssertionError('expected segneigh student_t rejection')\nexcept ValueError as exc:\n    assert \"supports detector='pelt' or 'binseg'\" in str(exc)",
+                None,
+                Some(&locals),
+            )
+            .expect("segneigh should reject student_t");
+        });
+    }
+
+    #[test]
     fn detect_offline_supports_segneigh_detector_and_dynp_alias() {
         with_python(|py| {
             let module = PyModule::new(py, "_cpd_rs").expect("module should be created");
@@ -3294,6 +3396,68 @@ mod tests {
             assert!(
                 err.to_string()
                     .contains("pipeline.detector='fpop' requires pipeline.cost='l2'"),
+                "unexpected error message: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn detect_offline_pipeline_accepts_student_t_for_binseg() {
+        with_python(|py| {
+            let pipeline = PyDict::new(py);
+            let detector = PyDict::new(py);
+            detector
+                .set_item("kind", "binseg")
+                .expect("detector.kind should be set");
+            pipeline
+                .set_item("detector", &detector)
+                .expect("pipeline.detector should be set");
+            pipeline
+                .set_item("cost", "student_t")
+                .expect("pipeline.cost should be set");
+            let stopping = PyDict::new(py);
+            stopping
+                .set_item("n_bkps", 1)
+                .expect("stopping.n_bkps should be set");
+            pipeline
+                .set_item("stopping", &stopping)
+                .expect("pipeline.stopping should be set");
+
+            let parsed =
+                parse_pipeline_spec(pipeline.as_any()).expect("pipeline parse should succeed");
+            assert!(matches!(parsed.cost, DoctorCostConfig::StudentT));
+        });
+    }
+
+    #[test]
+    fn detect_offline_pipeline_rejects_student_t_for_wbs() {
+        with_python(|py| {
+            let pipeline = PyDict::new(py);
+            let detector = PyDict::new(py);
+            detector
+                .set_item("kind", "wbs")
+                .expect("detector.kind should be set");
+            pipeline
+                .set_item("detector", &detector)
+                .expect("pipeline.detector should be set");
+            pipeline
+                .set_item("cost", "student_t")
+                .expect("pipeline.cost should be set");
+            let stopping = PyDict::new(py);
+            stopping
+                .set_item("n_bkps", 1)
+                .expect("stopping.n_bkps should be set");
+            pipeline
+                .set_item("stopping", &stopping)
+                .expect("pipeline.stopping should be set");
+
+            let err =
+                parse_pipeline_spec(pipeline.as_any()).expect_err("pipeline parse should fail");
+            assert!(err.is_instance_of::<PyValueError>(py));
+            assert!(
+                err.to_string().contains(
+                    "pipeline.cost='student_t' currently supports pipeline.detector='pelt' or 'binseg'"
+                ),
                 "unexpected error message: {err}"
             );
         });

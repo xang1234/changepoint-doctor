@@ -369,10 +369,10 @@ to verify architecture and run the CI-aligned local sanity flow.
 
 ## API Reference Outline
 
-- `Pelt(model="l2"|"normal"|"normal_full_cov", min_segment_len, jump, max_change_points)`
+- `Pelt(model="l2"|"normal"|"normal_full_cov"|"student_t", min_segment_len, jump, max_change_points)`
   - `.fit(x)` -> detector
   - `.predict(pen=..., n_bkps=...)` -> `OfflineChangePointResult`
-- `Binseg(model="l2"|"normal"|"normal_full_cov", min_segment_len, jump, max_change_points, max_depth)`
+- `Binseg(model="l2"|"normal"|"normal_full_cov"|"student_t", min_segment_len, jump, max_change_points, max_depth)`
   - `.fit(x)` -> detector
   - `.predict(pen=..., n_bkps=...)` -> `OfflineChangePointResult`
 - `Fpop(min_segment_len, jump, max_change_points)` (`l2` only)
@@ -381,7 +381,8 @@ to verify architecture and run the CI-aligned local sanity flow.
 - `detect_offline(x, pipeline=None, detector, cost, constraints, stopping, preprocess, repro_mode, return_diagnostics)`
   - `detector` accepts `pelt`, `binseg`, `fpop`, or `segneigh` (`dynp` alias). `fpop` requires `cost="l2"`.
   - `segneigh` is exact fixed-K dynamic programming (best when `stopping` is `n_bkps`/`KnownK`); runtime/memory can grow quickly on large `n` and high `k`.
-  - `cost` accepts `l1_median`, `l2`, `normal`, `normal_full_cov`, and (pipeline-only) `nig`.
+  - `cost` accepts `l1_median`, `l2`, `normal`, `normal_full_cov`, `rank`, `cosine`, and `student_t` (`student_t` currently supports `detector="pelt"` or `detector="binseg"`).
+  - pipeline `cost` additionally supports `nig`; `student_t` pipeline specs currently support detectors `pelt` and `binseg`.
   - `pipeline` accepts both simplified Python dicts (for example `{"detector": {"kind": "segneigh"}}`) and Rust `PipelineSpec` serde shape (for example `{"detector": {"Offline": {"SegNeigh": {...}}}, ...}`).
 - `OfflineChangePointResult`
   - fields: `breakpoints`, `change_points`, `scores`, `segments`, `diagnostics`

@@ -13,7 +13,7 @@ use cpd_core::{
 };
 use cpd_costs::{
     CostAR, CostCosine, CostL1Median, CostL2Mean, CostModel, CostNIGMarginal, CostNormalFullCov,
-    CostNormalMeanVar, CostRank,
+    CostNormalMeanVar, CostRank, CostStudentT,
 };
 use cpd_offline::{
     BinSeg, BinSegConfig, Dynp, DynpConfig, Fpop, FpopConfig, Pelt, PeltConfig, Wbs, WbsConfig,
@@ -296,6 +296,7 @@ impl PipelineSpec {
                     CostConfig::NormalFullCov => OfflineCostKind::NormalFullCov,
                     CostConfig::Nig => OfflineCostKind::Nig,
                     CostConfig::Rank => OfflineCostKind::Rank,
+                    CostConfig::StudentT => OfflineCostKind::StudentT,
                     CostConfig::None => {
                         return Err(CpdError::invalid_input(
                             "offline pipeline requires a concrete offline cost",
@@ -517,6 +518,7 @@ pub enum CostConfig {
     NormalFullCov,
     Nig,
     Rank,
+    StudentT,
     None,
 }
 
@@ -531,6 +533,7 @@ impl From<OfflineCostKind> for CostConfig {
             OfflineCostKind::NormalFullCov => Self::NormalFullCov,
             OfflineCostKind::Nig => Self::Nig,
             OfflineCostKind::Rank => Self::Rank,
+            OfflineCostKind::StudentT => Self::StudentT,
         }
     }
 }
@@ -569,6 +572,7 @@ pub enum OfflineCostKind {
     NormalFullCov,
     Nig,
     Rank,
+    StudentT,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1526,6 +1530,9 @@ fn run_offline_pipeline_with_config(
         OfflineCostKind::Rank => {
             run_offline_detector_with_cost(detect_view, detector, &ctx, CostRank::new(repro_mode))
         }
+        OfflineCostKind::StudentT => {
+            run_offline_detector_with_student_t_cost(detect_view, detector, &ctx, repro_mode)
+        }
     }
 }
 
@@ -1549,6 +1556,27 @@ fn run_offline_detector_with_cost<C: CostModel>(
         OfflineDetectorConfig::SegNeigh(config) => {
             Dynp::new(cost_model, config.clone())?.detect(x, ctx)
         }
+    }
+}
+
+fn run_offline_detector_with_student_t_cost(
+    x: &TimeSeriesView<'_>,
+    detector: &OfflineDetectorConfig,
+    ctx: &ExecutionContext<'_>,
+    repro_mode: ReproMode,
+) -> Result<OfflineChangePointResult, CpdError> {
+    match detector {
+        OfflineDetectorConfig::Pelt(config) => {
+            Pelt::new(CostStudentT::new(repro_mode), config.clone())?.detect(x, ctx)
+        }
+        OfflineDetectorConfig::BinSeg(config) => {
+            BinSeg::new(CostStudentT::new(repro_mode), config.clone())?.detect(x, ctx)
+        }
+        OfflineDetectorConfig::Fpop(_)
+        | OfflineDetectorConfig::Wbs(_)
+        | OfflineDetectorConfig::SegNeigh(_) => Err(CpdError::invalid_input(
+            "cost=student_t currently supports detector=pelt or detector=binseg",
+        )),
     }
 }
 
@@ -1725,6 +1753,9 @@ fn model_default_params_per_segment(cost: OfflineCostKind) -> usize {
             CostNIGMarginal::new(ReproMode::Balanced).penalty_params_per_segment()
         }
         OfflineCostKind::Rank => CostRank::new(ReproMode::Balanced).penalty_params_per_segment(),
+        OfflineCostKind::StudentT => {
+            CostStudentT::new(ReproMode::Balanced).penalty_params_per_segment()
+        }
     }
 }
 
@@ -2113,6 +2144,9 @@ fn multivariate_pipeline_warnings(
                 ),
                 OfflineCostKind::Rank => Some(
                     "multivariate semantics: CostRank applies per-dimension rank transforms, then sums additive per-dimension rank-SSE costs",
+                ),
+                OfflineCostKind::StudentT => Some(
+                    "multivariate semantics: CostStudentT estimates per-dimension location/scale with heavy-tail Student-t likelihood terms and sums additive per-dimension costs",
                 ),
             };
             message
@@ -3522,6 +3556,7 @@ fn pipeline_label(pipeline: &PipelineConfig) -> &'static str {
             }
             (OfflineDetectorConfig::Pelt(_), OfflineCostKind::Nig) => "PELT + NIG",
             (OfflineDetectorConfig::Pelt(_), OfflineCostKind::Rank) => "PELT + Rank",
+            (OfflineDetectorConfig::Pelt(_), OfflineCostKind::StudentT) => "PELT + Student-t",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Ar) => "BinSeg + AR",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Cosine) => "BinSeg + Cosine",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::L1Median) => "BinSeg + L1 median",
@@ -3532,6 +3567,9 @@ fn pipeline_label(pipeline: &PipelineConfig) -> &'static str {
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::L2) => "BinSeg + L2",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Nig) => "BinSeg + NIG",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Rank) => "BinSeg + Rank",
+            (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::StudentT) => {
+                "BinSeg + Student-t"
+            }
             (OfflineDetectorConfig::Fpop(_), OfflineCostKind::L2) => "FPOP + L2",
             (OfflineDetectorConfig::Fpop(_), OfflineCostKind::Ar)
             | (OfflineDetectorConfig::Fpop(_), OfflineCostKind::Cosine)
@@ -3539,7 +3577,8 @@ fn pipeline_label(pipeline: &PipelineConfig) -> &'static str {
             | (OfflineDetectorConfig::Fpop(_), OfflineCostKind::Normal)
             | (OfflineDetectorConfig::Fpop(_), OfflineCostKind::NormalFullCov)
             | (OfflineDetectorConfig::Fpop(_), OfflineCostKind::Nig)
-            | (OfflineDetectorConfig::Fpop(_), OfflineCostKind::Rank) => {
+            | (OfflineDetectorConfig::Fpop(_), OfflineCostKind::Rank)
+            | (OfflineDetectorConfig::Fpop(_), OfflineCostKind::StudentT) => {
                 "FPOP + non-L2 (unsupported)"
             }
             (OfflineDetectorConfig::Wbs(_), OfflineCostKind::Ar) => "WBS + AR",
@@ -3552,6 +3591,9 @@ fn pipeline_label(pipeline: &PipelineConfig) -> &'static str {
             }
             (OfflineDetectorConfig::Wbs(_), OfflineCostKind::Nig) => "WBS + NIG",
             (OfflineDetectorConfig::Wbs(_), OfflineCostKind::Rank) => "WBS + Rank",
+            (OfflineDetectorConfig::Wbs(_), OfflineCostKind::StudentT) => {
+                "WBS + Student-t (unsupported)"
+            }
             (OfflineDetectorConfig::SegNeigh(_), OfflineCostKind::Ar) => "Dynp + AR",
             (OfflineDetectorConfig::SegNeigh(_), OfflineCostKind::Cosine) => "Dynp + Cosine",
             (OfflineDetectorConfig::SegNeigh(_), OfflineCostKind::L1Median) => "Dynp + L1 median",
@@ -3562,6 +3604,9 @@ fn pipeline_label(pipeline: &PipelineConfig) -> &'static str {
             }
             (OfflineDetectorConfig::SegNeigh(_), OfflineCostKind::Nig) => "Dynp + NIG",
             (OfflineDetectorConfig::SegNeigh(_), OfflineCostKind::Rank) => "Dynp + Rank",
+            (OfflineDetectorConfig::SegNeigh(_), OfflineCostKind::StudentT) => {
+                "Dynp + Student-t (unsupported)"
+            }
         },
         PipelineConfig::Online { detector } => match detector {
             OnlineDetectorConfig::Bocpd(config) => match config.observation {
@@ -3769,6 +3814,7 @@ fn pipeline_id(pipeline: &PipelineConfig) -> String {
                 OfflineCostKind::NormalFullCov => "normal_full_cov",
                 OfflineCostKind::Nig => "nig",
                 OfflineCostKind::Rank => "rank",
+                OfflineCostKind::StudentT => "student_t",
             };
             format!(
                 "offline:{detector_name}:{cost_name}:jump={}",
@@ -3912,6 +3958,7 @@ mod tests {
                     OfflineCostKind::NormalFullCov => "normal_full_cov",
                     OfflineCostKind::Nig => "nig",
                     OfflineCostKind::Rank => "rank",
+                    OfflineCostKind::StudentT => "student_t",
                 });
             }
         }
@@ -5171,6 +5218,42 @@ mod tests {
         assert_eq!(first.diagnostics.algorithm, "dynp");
     }
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn pipeline_spec_roundtrip_serde_supports_student_t() {
+        let values = vec![
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
+        ];
+        let view = make_univariate_view(&values);
+        let stopping = Stopping::KnownK(1);
+        let pipeline = PipelineSpec {
+            detector: DetectorConfig::Offline(OfflineDetectorConfig::BinSeg(
+                cpd_offline::BinSegConfig {
+                    stopping: stopping.clone(),
+                    ..cpd_offline::BinSegConfig::default()
+                },
+            )),
+            cost: CostConfig::StudentT,
+            preprocess: None,
+            constraints: Constraints {
+                min_segment_len: 2,
+                ..Constraints::default()
+            },
+            stopping: Some(stopping),
+            seed: None,
+        };
+
+        let first = super::execute_pipeline(&view, &pipeline).expect("first run should succeed");
+        let encoded = serde_json::to_vec(&pipeline).expect("pipeline should serialize");
+        let decoded: PipelineSpec =
+            serde_json::from_slice(&encoded).expect("pipeline should decode");
+        let second = super::execute_pipeline(&view, &decoded).expect("second run should succeed");
+
+        assert_eq!(first.breakpoints, second.breakpoints);
+        assert_eq!(first.diagnostics.cost_model, "student_t");
+        assert_eq!(second.diagnostics.cost_model, "student_t");
+    }
+
     #[test]
     fn execute_pipeline_rejects_online_spec_with_clear_error() {
         let values = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
@@ -5287,6 +5370,34 @@ mod tests {
         assert!(
             first.abs_diff(6) <= 1,
             "expected a changepoint near 6, got {first}"
+        );
+    }
+
+    #[test]
+    fn execute_pipeline_rejects_student_t_for_wbs() {
+        let values = vec![0.0, 0.0, 0.0, 5.0, 5.0, 5.0, -3.0, -3.0, -3.0];
+        let view = make_univariate_view(&values);
+        let stopping = Stopping::KnownK(1);
+        let pipeline = PipelineSpec {
+            detector: DetectorConfig::Offline(OfflineDetectorConfig::Wbs(cpd_offline::WbsConfig {
+                stopping: stopping.clone(),
+                ..cpd_offline::WbsConfig::default()
+            })),
+            cost: CostConfig::StudentT,
+            preprocess: None,
+            constraints: Constraints {
+                min_segment_len: 2,
+                ..Constraints::default()
+            },
+            stopping: Some(stopping),
+            seed: None,
+        };
+
+        let err = super::execute_pipeline(&view, &pipeline)
+            .expect_err("wbs should reject student_t cost");
+        assert!(
+            err.to_string()
+                .contains("cost=student_t currently supports detector=pelt or detector=binseg")
         );
     }
 

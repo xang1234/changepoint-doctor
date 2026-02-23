@@ -19,7 +19,7 @@ cpd.Pelt(
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `model` | `str` | `"l2"` | Cost model. Accepts `"l2"`, `"normal"`, `"normal_full_cov"` |
+| `model` | `str` | `"l2"` | Cost model. Accepts `"l2"`, `"normal"`, `"normal_full_cov"`, `"student_t"` |
 | `min_segment_len` | `int` | `2` | Minimum number of samples in each segment |
 | `jump` | `int` | `1` | Stride over candidate split points. Increase to trade precision for speed |
 | `max_change_points` | `int \| None` | `None` | Hard upper bound on the number of change points returned |
@@ -78,7 +78,7 @@ cpd.Binseg(
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `model` | `str` | `"l2"` | Cost model. Accepts `"l2"`, `"normal"`, `"normal_full_cov"` |
+| `model` | `str` | `"l2"` | Cost model. Accepts `"l2"`, `"normal"`, `"normal_full_cov"`, `"student_t"` |
 | `min_segment_len` | `int` | `2` | Minimum segment length |
 | `jump` | `int` | `1` | Candidate stride |
 | `max_change_points` | `int \| None` | `None` | Hard cap on detected change points |
