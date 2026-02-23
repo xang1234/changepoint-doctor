@@ -94,6 +94,7 @@ Numeric invariants and caveats:
 - `VarianceMatched` intentionally falls back to `SegmentVariance` when `nu <= 2` (infinite-variance regimes).
 - The log-tail term uses `log1p` and finite clamping to remain stable on stress fixtures.
 - Segment location/scale use cached segment statistics; tail terms still evaluate per-sample residuals inside each queried segment.
+- Robustness against extreme isolated outliers is still experimental; broader robustness benchmarking and guidance live in follow-up `CPD-l83.5.4`.
 - API availability:
   - Python high-level classes: `Pelt(model="student_t")`, `Binseg(model="student_t")`
   - `detect_offline(..., cost="student_t")`: supported for `detector="pelt"` and `detector="binseg"`

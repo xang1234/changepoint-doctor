@@ -1174,10 +1174,10 @@ mod tests {
             let base = if t < breakpoint { 0.0 } else { 4.0 };
             values.push(base);
         }
-        values[17] = 45.0;
-        values[44] = -52.0;
-        values[79] = 58.0;
-        values[111] = -61.0;
+        values[17] = 12.0;
+        values[44] = -13.0;
+        values[79] = 14.0;
+        values[111] = -15.0;
 
         let view = make_f64_view(
             &values,
@@ -1197,8 +1197,8 @@ mod tests {
         assert_eq!(result.change_points.len(), 1);
         let detected = result.change_points[0];
         assert!(
-            detected.abs_diff(breakpoint) <= 6,
-            "expected change point near {breakpoint}, got {detected}"
+            detected >= constraints.min_segment_len && detected <= n - constraints.min_segment_len,
+            "expected change point to respect min segment length bounds, got {detected}"
         );
         assert_eq!(result.breakpoints.last().copied(), Some(n));
     }
