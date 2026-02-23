@@ -1,0 +1,67 @@
+{
+  "manifest_version": 1,
+  "suite": "student-t-robustness-v1",
+  "description": "Versioned Student-t robustness segment-query benchmark cases (exact vs approximate and Gaussian baseline).",
+  "cases": [
+    {
+      "id": "cost_student_t_robustness/normal_outlier_segment_cost_n1e5_d1",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/normal_outlier_segment_cost_n1e5_d1"
+    },
+    {
+      "id": "cost_student_t_robustness/student_t_exact_outlier_segment_cost_n1e5_d1",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/student_t_exact_outlier_segment_cost_n1e5_d1"
+    },
+    {
+      "id": "cost_student_t_robustness/student_t_approx_outlier_segment_cost_n1e5_d1_tol0p10",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/student_t_approx_outlier_segment_cost_n1e5_d1_tol0p10"
+    },
+    {
+      "id": "cost_student_t_robustness/normal_outlier_segment_cost_n1e5_d8",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/normal_outlier_segment_cost_n1e5_d8"
+    },
+    {
+      "id": "cost_student_t_robustness/student_t_exact_outlier_segment_cost_n1e5_d8",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/student_t_exact_outlier_segment_cost_n1e5_d8"
+    },
+    {
+      "id": "cost_student_t_robustness/student_t_approx_outlier_segment_cost_n1e5_d8_tol0p10",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/student_t_approx_outlier_segment_cost_n1e5_d8_tol0p10"
+    },
+    {
+      "id": "cost_student_t_robustness/normal_heavy_tail_segment_cost_n1e5_d1",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/normal_heavy_tail_segment_cost_n1e5_d1"
+    },
+    {
+      "id": "cost_student_t_robustness/student_t_exact_heavy_tail_segment_cost_n1e5_d1",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/student_t_exact_heavy_tail_segment_cost_n1e5_d1"
+    },
+    {
+      "id": "cost_student_t_robustness/student_t_approx_heavy_tail_segment_cost_n1e5_d1_tol0p10",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/student_t_approx_heavy_tail_segment_cost_n1e5_d1_tol0p10"
+    },
+    {
+      "id": "cost_student_t_robustness/normal_heavy_tail_segment_cost_n1e5_d8",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/normal_heavy_tail_segment_cost_n1e5_d8"
+    },
+    {
+      "id": "cost_student_t_robustness/student_t_exact_heavy_tail_segment_cost_n1e5_d8",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/student_t_exact_heavy_tail_segment_cost_n1e5_d8"
+    },
+    {
+      "id": "cost_student_t_robustness/student_t_approx_heavy_tail_segment_cost_n1e5_d8_tol0p10",
+      "bench": "cost_student_t_robustness",
+      "criterion_id": "cost_student_t_robustness/student_t_approx_heavy_tail_segment_cost_n1e5_d8_tol0p10"
+    }
+  ]
+}

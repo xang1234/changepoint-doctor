@@ -9,6 +9,7 @@ Additive (independent-dimension) costs:
 - `CostL2Mean`: sum of per-dimension SSE terms.
 - `CostNormalMeanVar`: sum of per-dimension Gaussian negative log-likelihood terms (diagonal covariance).
 - `CostNIGMarginal`: sum of per-dimension NIG log-marginal terms (diagonal covariance).
+- `CostStudentT`: sum of per-dimension heavy-tail Student-t negative log-likelihood terms.
 - `CostPoissonRate`: sum of per-dimension Poisson rate log-likelihood terms.
 - `CostBernoulli`: sum of per-dimension Bernoulli log-likelihood terms.
 - `CostLinear`: sum of per-dimension piecewise-linear residual terms.
@@ -47,6 +48,8 @@ Worst-case cache bytes:
 - `CostLinear`: `(n + 1) * 2 * F + P * 3 * F`
 - `CostAR (order=1)`: `3 * P * F`
 - `CostAR (order>1)`: `n * d * F`
+- `CostStudentT (exact)`: `2 * P * F + (n * d * F)`
+- `CostStudentT (approximate)`: `2 * P * F + 2 * ceil(n / B) * d * F` (`B`: approximate block length)
 
 Asymptotically:
 
@@ -57,6 +60,8 @@ Asymptotically:
 
 - `CostNormalMeanVar`: `O(d)` per segment query.
 - `CostNormalFullCov`: `O(d^2)` covariance assembly + `O(d^3)` Cholesky log-det per segment query.
+- `CostStudentT (exact)`: `O(d * m)` per segment query (`m = end - start`).
+- `CostStudentT (approximate)`: `O(d * (m / B + 1))` per segment query.
 
 ## Penalty Scaling (BIC/AIC)
 
@@ -88,6 +93,12 @@ CPD_BENCH_EXACT=normal_full_cov_segment_cost_n5e4_d16 \
 ```
 
 Included families use `d in {1, 8, 16}` and include `normal_full_cov`.
+
+Student-t robustness/performance harness (`n=1e5`, `d in {1, 8}`):
+
+- `cpd/crates/cpd-bench/benches/cost_student_t_robustness.rs`
+- `cpd/benchmarks/student_t_robustness_manifest.v1.json`
+- `cpd/docs/student_t_experimental.md`
 
 ## Doctor Awareness
 

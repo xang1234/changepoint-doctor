@@ -46,6 +46,11 @@ harness = false
 path = "benches/cost_multivariate.rs"
 
 [[bench]]
+name = "cost_student_t_robustness"
+harness = false
+path = "benches/cost_student_t_robustness.rs"
+
+[[bench]]
 name = "cost_rank_cosine"
 harness = false
 path = "benches/cost_rank_cosine.rs"
