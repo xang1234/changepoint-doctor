@@ -11,7 +11,7 @@ Cost models define how segment homogeneity is measured. The choice of cost model
 | Normal | `"normal"` | Gaussian negative log-likelihood (diagonal) | Yes (additive) | Mean + variance changes |
 | Normal Full Cov | `"normal_full_cov"` | Multivariate Gaussian with full covariance | Yes (cross-dim) | Covariance structure changes |
 | NIG | `"nig"` | Normal-Inverse-Gamma marginal likelihood | Yes (additive) | Bayesian mean/variance inference |
-| Student-t (experimental) | `"student_t"` | Student-t negative log-likelihood with robust tails | Yes (additive) | Heavy-tailed / outlier-prone continuous data |
+| Student-t (experimental) | Pending integration (`CPD-l83.5.3`) | Student-t negative log-likelihood with robust tails | Yes (additive) | Heavy-tailed / outlier-prone continuous data |
 | AR | `"ar"` | Autoregressive residual likelihood | Yes (additive) | Changes in autocorrelated data |
 | Bernoulli | `"bernoulli"` | Bernoulli log-likelihood | Yes (additive) | Binary event rate changes |
 | Poisson | `"poisson"` | Poisson rate log-likelihood | Yes (additive) | Count data rate changes |
@@ -85,6 +85,7 @@ Current parameterization and defaults:
   - `VarianceMatched` (default): segment variance scaled by `(nu-2)/nu` when `nu > 2`
   - `SegmentVariance`: direct segment-variance scale estimate
   - `Fixed(s)`: fixed global scale (`s > 0`)
+- **BIC/AIC params per dimension:** `3` for variance-estimating modes; `2` for `Fixed(s)`
 - **`min_scale`**: default `1e-8`; lower clamp for numerical stability
 - **`repro_mode`**: supports `balanced` and `strict` deterministic accumulation paths
 
@@ -93,6 +94,7 @@ Numeric invariants and caveats:
 - `VarianceMatched` intentionally falls back to `SegmentVariance` when `nu <= 2` (infinite-variance regimes).
 - The log-tail term uses `log1p` and finite clamping to remain stable on stress fixtures.
 - Segment location/scale use cached segment statistics; tail terms still evaluate per-sample residuals inside each queried segment.
+- API/CLI exposure is intentionally deferred to `CPD-l83.5.3`.
 
 ### AR (CostAR)
 
@@ -152,7 +154,7 @@ Default:
 | `normal` | `Pelt`, `Binseg` | Yes | -- |
 | `normal_full_cov` | `Pelt`, `Binseg` | Yes | -- |
 | `nig` | -- | -- | Yes |
-| `student_t` | -- | -- | Experimental / pipeline-only |
+| `student_t` | -- | No | Not yet exposed (planned in `CPD-l83.5.3`) |
 | `ar` | -- | -- | Yes |
 | `rank` | -- | -- | Yes |
 | `cosine` | -- | -- | Yes |

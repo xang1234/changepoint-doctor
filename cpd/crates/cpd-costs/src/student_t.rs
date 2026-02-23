@@ -377,7 +377,10 @@ impl CostModel for CostStudentT {
     }
 
     fn penalty_params_per_segment(&self) -> usize {
-        3
+        match self.scale_mode {
+            StudentTScaleMode::Fixed(_) => 2,
+            StudentTScaleMode::SegmentVariance | StudentTScaleMode::VarianceMatched => 3,
+        }
     }
 
     fn validate(&self, x: &TimeSeriesView<'_>) -> Result<(), CpdError> {
@@ -754,6 +757,15 @@ mod tests {
         assert_eq!(model.missing_support(), MissingSupport::Reject);
         assert!(!model.supports_approx_cache());
         assert_eq!(model.penalty_params_per_segment(), 3);
+
+        let fixed_scale = CostStudentT::with_params(
+            4.0,
+            StudentTScaleMode::Fixed(1.0),
+            1e-8,
+            ReproMode::Balanced,
+        )
+        .expect("fixed-scale params should be valid");
+        assert_eq!(fixed_scale.penalty_params_per_segment(), 2);
     }
 
     #[test]
