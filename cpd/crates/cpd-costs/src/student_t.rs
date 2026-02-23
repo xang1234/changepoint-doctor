@@ -517,15 +517,44 @@ fn approximate_interval_log1p_terms(
     let interval_mean = sum / m;
     let interval_sse = normalize_sse(sum_sq - (sum * sum) / m);
     let value_at_mean = log1p_quadratic_term(interval_mean, segment_mean, denom);
+    let base_estimate = m * value_at_mean;
     let curvature = log1p_quadratic_second_derivative(interval_mean, segment_mean, denom);
     let correction = 0.5 * curvature * interval_sse;
-    let estimate = m * value_at_mean + correction;
+    let estimate = if correction.is_finite() && correction > 0.0 {
+        base_estimate + correction
+    } else {
+        base_estimate
+    };
     if !estimate.is_finite() {
         f64::MAX
-    } else if estimate <= 0.0 {
-        0.0
     } else {
         estimate
+    }
+}
+
+fn block_moments(values: &[f64], repro_mode: ReproMode) -> (f64, f64) {
+    if matches!(repro_mode, ReproMode::Strict) {
+        let mut sum = 0.0;
+        let mut sum_comp = 0.0;
+        let mut sum_sq = 0.0;
+        let mut sum_sq_comp = 0.0;
+        for &value in values {
+            let sum_y = value - sum_comp;
+            let sum_t = sum + sum_y;
+            sum_comp = (sum_t - sum) - sum_y;
+            sum = sum_t;
+
+            let sq = value * value;
+            let sq_y = sq - sum_sq_comp;
+            let sq_t = sum_sq + sq_y;
+            sum_sq_comp = (sq_t - sum_sq) - sq_y;
+            sum_sq = sq_t;
+        }
+        (sum, sum_sq)
+    } else {
+        let sum = values.iter().sum::<f64>();
+        let sum_sq = values.iter().map(|v| v * v).sum::<f64>();
+        (sum, sum_sq)
     }
 }
 
@@ -692,6 +721,16 @@ impl CostModel for CostStudentT {
                 max_bytes,
                 error_tolerance,
             } => {
+                if *max_bytes == 0 {
+                    return Err(CpdError::invalid_input(
+                        "CostStudentT approximate cache max_bytes must be > 0; got 0",
+                    ));
+                }
+                if !error_tolerance.is_finite() || *error_tolerance <= 0.0 {
+                    return Err(CpdError::invalid_input(format!(
+                        "CostStudentT approximate cache error_tolerance must be finite and > 0.0; got {error_tolerance}"
+                    )));
+                }
                 let block_len =
                     choose_approximate_block_len(x.n, x.d, *error_tolerance, *max_bytes)?;
                 let blocks_per_dim = x.n.div_ceil(block_len);
@@ -752,8 +791,7 @@ impl CostModel for CostStudentT {
             }
             if let StudentTQueryMode::Approximate(approx) = &query_mode {
                 for chunk in series.chunks(approx.block_len) {
-                    let chunk_sum = chunk.iter().sum::<f64>();
-                    let chunk_sum_sq = chunk.iter().map(|v| v * v).sum::<f64>();
+                    let (chunk_sum, chunk_sum_sq) = block_moments(chunk, self.repro_mode);
                     block_sum.push(chunk_sum);
                     block_sum_sq.push(chunk_sum_sq);
                 }
@@ -1346,6 +1384,39 @@ mod tests {
             approx_cache.query_mode,
             StudentTQueryMode::Approximate(_)
         ));
+
+        let zero_budget_err = model
+            .precompute(
+                &view,
+                &CachePolicy::Approximate {
+                    max_bytes: 0,
+                    error_tolerance: 0.1,
+                },
+            )
+            .expect_err("zero approximate budget should fail");
+        assert!(matches!(zero_budget_err, CpdError::InvalidInput(_)));
+
+        let zero_tol_err = model
+            .precompute(
+                &view,
+                &CachePolicy::Approximate {
+                    max_bytes: required,
+                    error_tolerance: 0.0,
+                },
+            )
+            .expect_err("zero error_tolerance should fail");
+        assert!(matches!(zero_tol_err, CpdError::InvalidInput(_)));
+
+        let nan_tol_err = model
+            .precompute(
+                &view,
+                &CachePolicy::Approximate {
+                    max_bytes: required,
+                    error_tolerance: f64::NAN,
+                },
+            )
+            .expect_err("nan error_tolerance should fail");
+        assert!(matches!(nan_tol_err, CpdError::InvalidInput(_)));
     }
 
     #[test]
@@ -1395,6 +1466,71 @@ mod tests {
                 "approximate segment cost drift too large for [{start}, {end}): exact={exact}, approx={approx}, relative={relative}"
             );
         }
+    }
+
+    #[test]
+    fn strict_mode_approximate_cache_uses_compensated_block_moments() {
+        let mut values = Vec::with_capacity(256);
+        values.push(1.0e16);
+        values.extend(std::iter::repeat_n(1.0, 254));
+        values.push(-1.0e16);
+        let expected_sum = 254.0;
+
+        let view = make_f64_view(
+            &values,
+            values.len(),
+            1,
+            MemoryLayout::CContiguous,
+            MissingPolicy::Error,
+        );
+
+        let balanced_model = CostStudentT::with_params(
+            4.0,
+            StudentTScaleMode::VarianceMatched,
+            1e-8,
+            ReproMode::Balanced,
+        )
+        .expect("balanced params should be valid");
+        let strict_model = CostStudentT::with_params(
+            4.0,
+            StudentTScaleMode::VarianceMatched,
+            1e-8,
+            ReproMode::Strict,
+        )
+        .expect("strict params should be valid");
+
+        let balanced_cache = balanced_model
+            .precompute(
+                &view,
+                &CachePolicy::Approximate {
+                    max_bytes: balanced_model.worst_case_cache_bytes(&view),
+                    error_tolerance: 1.0,
+                },
+            )
+            .expect("balanced approximate precompute should succeed");
+        let strict_cache = strict_model
+            .precompute(
+                &view,
+                &CachePolicy::Approximate {
+                    max_bytes: strict_model.worst_case_cache_bytes(&view),
+                    error_tolerance: 1.0,
+                },
+            )
+            .expect("strict approximate precompute should succeed");
+
+        let balanced_block_sum = match &balanced_cache.query_mode {
+            StudentTQueryMode::Approximate(approx) => approx.block_sum[0],
+            StudentTQueryMode::Exact => panic!("expected approximate cache"),
+        };
+        let strict_block_sum = match &strict_cache.query_mode {
+            StudentTQueryMode::Approximate(approx) => approx.block_sum[0],
+            StudentTQueryMode::Exact => panic!("expected approximate cache"),
+        };
+
+        assert!(
+            (strict_block_sum - expected_sum).abs() < (balanced_block_sum - expected_sum).abs(),
+            "strict approximate block sum should be closer to expected: strict={strict_block_sum}, balanced={balanced_block_sum}, expected={expected_sum}"
+        );
     }
 
     #[test]
