@@ -3567,9 +3567,7 @@ fn pipeline_label(pipeline: &PipelineConfig) -> &'static str {
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::L2) => "BinSeg + L2",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Nig) => "BinSeg + NIG",
             (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::Rank) => "BinSeg + Rank",
-            (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::StudentT) => {
-                "BinSeg + Student-t"
-            }
+            (OfflineDetectorConfig::BinSeg(_), OfflineCostKind::StudentT) => "BinSeg + Student-t",
             (OfflineDetectorConfig::Fpop(_), OfflineCostKind::L2) => "FPOP + L2",
             (OfflineDetectorConfig::Fpop(_), OfflineCostKind::Ar)
             | (OfflineDetectorConfig::Fpop(_), OfflineCostKind::Cosine)
@@ -5221,9 +5219,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn pipeline_spec_roundtrip_serde_supports_student_t() {
-        let values = vec![
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
-        ];
+        let values = vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0];
         let view = make_univariate_view(&values);
         let stopping = Stopping::KnownK(1);
         let pipeline = PipelineSpec {

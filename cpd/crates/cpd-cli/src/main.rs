@@ -2822,8 +2822,9 @@ mod tests {
         let args = parse_detect_args(tokens.as_slice()).expect("detect args should parse");
         let err = build_detect_pipeline(&args).expect_err("wbs+student_t should fail");
         assert!(
-            err.to_string()
-                .contains("--cost=student_t currently supports --algorithm=pelt or --algorithm=binseg"),
+            err.to_string().contains(
+                "--cost=student_t currently supports --algorithm=pelt or --algorithm=binseg"
+            ),
             "unexpected error message: {err}"
         );
     }
@@ -2902,8 +2903,9 @@ mod tests {
         "#;
         let err = parse_pipeline_spec_document(raw).expect_err("wbs+student_t should fail");
         assert!(
-            err.to_string()
-                .contains("pipeline.cost='student_t' currently supports pipeline.detector='pelt' or 'binseg'"),
+            err.to_string().contains(
+                "pipeline.cost='student_t' currently supports pipeline.detector='pelt' or 'binseg'"
+            ),
             "unexpected error message: {err}"
         );
     }

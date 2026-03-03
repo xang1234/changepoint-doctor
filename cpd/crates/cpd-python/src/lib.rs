@@ -1926,10 +1926,7 @@ fn detect_with_view(
         ) => Err(CpdError::invalid_input(
             "detector='fpop' requires cost='l2'",
         )),
-        (
-            PyDetectorKind::SegNeigh,
-            PyCostModel::StudentT,
-        ) => Err(CpdError::invalid_input(
+        (PyDetectorKind::SegNeigh, PyCostModel::StudentT) => Err(CpdError::invalid_input(
             "cost='student_t' currently supports detector='pelt' or 'binseg'",
         )),
     }
