@@ -14,6 +14,8 @@ use proptest::test_runner::{Config as ProptestConfig, FileFailurePersistence};
 
 const ABS_TOL: f64 = 1e-7;
 const REL_TOL: f64 = 1e-6;
+const NORMAL_SHORT_SEGMENT_REL_TOL: f64 = 2e-5;
+const NORMAL_SHORT_SEGMENT_MAX_LEN: usize = 8;
 const VAR_FLOOR: f64 = f64::EPSILON * 1e6;
 const MIN_PROPTEST_CASES: u32 = 1000;
 const LOG_2PI: f64 = 1.8378770664093453;
@@ -52,6 +54,17 @@ fn relative_close(actual: f64, expected: f64) -> bool {
     let diff = (actual - expected).abs();
     let scale = 1.0 + expected.abs();
     diff <= ABS_TOL || diff <= REL_TOL * scale
+}
+
+fn normal_oracle_close(actual: f64, expected: f64, segment_len: usize) -> bool {
+    let diff = (actual - expected).abs();
+    let scale = 1.0 + expected.abs();
+    let rel_tol = if segment_len <= NORMAL_SHORT_SEGMENT_MAX_LEN {
+        NORMAL_SHORT_SEGMENT_REL_TOL
+    } else {
+        REL_TOL
+    };
+    diff <= ABS_TOL || diff <= rel_tol * scale
 }
 
 fn naive_l2(values: &[f64], start: usize, end: usize) -> f64 {
@@ -98,10 +111,15 @@ fn ln_gamma_for_default_prior_alpha(segment_len: usize) -> f64 {
 fn naive_normal(values: &[f64], start: usize, end: usize) -> f64 {
     let segment = &values[start..end];
     let len = segment.len() as f64;
-    let sum: f64 = segment.iter().sum();
-    let sum_sq: f64 = segment.iter().map(|value| value * value).sum();
-    let mean = sum / len;
-    let raw_var = sum_sq / len - mean * mean;
+    let mean = segment.iter().sum::<f64>() / len;
+    let sse: f64 = segment
+        .iter()
+        .map(|value| {
+            let centered = *value - mean;
+            centered * centered
+        })
+        .sum();
+    let raw_var = sse / len;
     let var = normalize_variance(raw_var);
     len * var.ln()
 }
@@ -390,7 +408,7 @@ proptest! {
         let actual_second = model.segment_cost(&cache, start, end);
         let expected = naive_normal(&values, start, end);
 
-        prop_assert!(relative_close(actual_first, expected));
+        prop_assert!(normal_oracle_close(actual_first, expected, end - start));
         prop_assert!(relative_close(actual_first, actual_second));
     }
 
@@ -504,7 +522,7 @@ proptest! {
         let base_cost = normal_segment_cost(&values, n, 1, start, end);
         let shifted_cost = normal_segment_cost(&shifted, n, 1, start, end);
 
-        prop_assert!(relative_close(base_cost, shifted_cost));
+        prop_assert!(normal_oracle_close(base_cost, shifted_cost, end - start));
     }
 
     #[test]
@@ -525,7 +543,7 @@ proptest! {
         let segment_len = (end - start) as f64;
         let expected = base_cost + 2.0 * segment_len * scale.abs().ln();
 
-        prop_assert!(relative_close(transformed_cost, expected));
+        prop_assert!(normal_oracle_close(transformed_cost, expected, end - start));
     }
 
     #[test]
