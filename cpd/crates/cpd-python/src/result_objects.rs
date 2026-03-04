@@ -1050,6 +1050,7 @@ mod tests {
         locals: Option<&pyo3::Bound<'py, PyDict>>,
     ) -> PyResult<()> {
         let code = CString::new(code).expect("python snippet should not contain NUL bytes");
+        let globals = globals.or(locals);
         py.run(code.as_c_str(), globals, locals)
     }
 
