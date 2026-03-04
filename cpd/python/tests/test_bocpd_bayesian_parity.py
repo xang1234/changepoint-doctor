@@ -36,6 +36,26 @@ def _required_category_minimums() -> dict[str, int]:
 
 
 def test_bocpd_bayesian_parity_contract() -> None:
+    profile = os.environ.get("CPD_BOCPD_PARITY_PROFILE", "smoke").strip().lower()
+    missing_reference = bh.missing_reference_modules()
+    if missing_reference:
+        report_out = os.environ.get("CPD_BOCPD_PARITY_REPORT_OUT")
+        if report_out:
+            payload = {
+                "profile": profile,
+                "manifest_path": str(MANIFEST_PATH),
+                "skipped": True,
+                "skip_reason": "reference BOCPD package is missing required modules",
+                "missing_reference_modules": list(missing_reference),
+            }
+            out_path = Path(report_out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        pytest.skip(
+            "reference BOCPD backend missing required modules: "
+            + ", ".join(missing_reference)
+        )
+
     cases = bh.load_manifest(MANIFEST_PATH)
     assert len(cases) >= 12
 
@@ -43,7 +63,6 @@ def test_bocpd_bayesian_parity_contract() -> None:
     for category, minimum in _required_category_minimums().items():
         assert counts.get(category, 0) >= minimum, f"insufficient cases for {category}"
 
-    profile = os.environ.get("CPD_BOCPD_PARITY_PROFILE", "smoke").strip().lower()
     selected = bh.select_cases(cases, profile=profile)
     assert selected, f"no parity cases selected for profile={profile!r}"
 

@@ -160,3 +160,21 @@ def test_reference_adapter_normalizes_run_length_matrix(monkeypatch: pytest.Monk
     assert np.all(np.isfinite(p_change))
     assert p_change[0] == pytest.approx(0.1)
     assert p_change[-1] == pytest.approx(0.9)
+
+
+def test_missing_reference_modules_reports_absent_submodules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required = (
+        "bayesian_changepoint_detection.online_changepoint_detection",
+        "bayesian_changepoint_detection.hazard_functions",
+        "bayesian_changepoint_detection.online_likelihoods",
+    )
+
+    def _fake_find_spec(name: str):
+        return None if name in required else object()
+
+    monkeypatch.setattr(bh.importlib.util, "find_spec", _fake_find_spec)
+
+    missing = bh.missing_reference_modules()
+    assert missing == required

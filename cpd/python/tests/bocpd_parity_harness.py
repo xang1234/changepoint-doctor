@@ -14,6 +14,11 @@ import numpy as np
 _ALLOWED_PROFILES = {"smoke", "full"}
 _WARMUP_SKIP = 5
 _MIN_SEPARATION = 8
+_REFERENCE_MODULES = (
+    "bayesian_changepoint_detection.online_changepoint_detection",
+    "bayesian_changepoint_detection.hazard_functions",
+    "bayesian_changepoint_detection.online_likelihoods",
+)
 
 
 @dataclass(frozen=True)
@@ -289,6 +294,18 @@ def run_cpd_case(values: np.ndarray, hazard_mean_run_length: float) -> np.ndarra
             f"cpd p_change length mismatch: got {p_change.shape[0]}, expected {values.shape[0]}"
         )
     return p_change
+
+
+def missing_reference_modules() -> tuple[str, ...]:
+    missing: list[str] = []
+    for module_name in _REFERENCE_MODULES:
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except ModuleNotFoundError:
+            spec = None
+        if spec is None:
+            missing.append(module_name)
+    return tuple(missing)
 
 
 def run_reference_case(values: np.ndarray, hazard_mean_run_length: float) -> np.ndarray:
