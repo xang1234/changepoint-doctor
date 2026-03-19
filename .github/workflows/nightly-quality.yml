@@ -129,11 +129,25 @@ jobs:
         working-directory: cpd
         run: cargo test --workspace --release --all-targets --exclude cpd-bench
 
-      - name: Build Python extension in release mode
+      - name: Build and install Python extension in release mode
         working-directory: cpd/python
         run: |
           python -m pip install --upgrade pip maturin pytest numpy
-          maturin develop --release --manifest-path ../crates/cpd-python/Cargo.toml
+          maturin build --release --interpreter python --manifest-path ../crates/cpd-python/Cargo.toml
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          wheels = sorted(Path("../target/wheels").glob("changepoint_doctor-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(
+                  f"expected exactly one changepoint-doctor wheel, found {len(wheels)}: {[str(w) for w in wheels]}"
+              )
+          subprocess.check_call(
+              [sys.executable, "-m", "pip", "install", "--force-reinstall", str(wheels[0])]
+          )
+          PY
 
       - name: Run long Python soak smoke tests
         working-directory: cpd/python
