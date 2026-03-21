@@ -34,7 +34,7 @@ jobs:
                   "cibw_archs": "x86_64",
               },
               {
-                  "runner": "macos-13",
+                  "runner": "macos-15-intel",
                   "platform_artifact": "macos-universal2",
                   "cibw_archs": "universal2",
               },

@@ -60,7 +60,7 @@ jobs:
                       "experimental": True,
                   },
                   {
-                      "runner": "macos-13",
+                      "runner": "macos-15-intel",
                       "runner_arch": "x86_64",
                       "platform_artifact": "macos-universal2",
                       "python_version": "3.11",
@@ -81,10 +81,10 @@ jobs:
           platform_map = {
               "ubuntu-latest": ("linux-manylinux-x86_64", "x86_64"),
               "windows-2022": ("windows-amd64", "x86_64"),
-              "macos-13": ("macos-universal2", "x86_64"),
+              "macos-15-intel": ("macos-universal2", "x86_64"),
               "macos-14": ("macos-universal2", "arm64"),
           }
-          runners = ["ubuntu-latest", "windows-2022", "macos-13", "macos-14"]
+          runners = ["ubuntu-latest", "windows-2022", "macos-15-intel", "macos-14"]
           full_rows = []
           for runner in runners:
               artifact, arch = platform_map[runner]

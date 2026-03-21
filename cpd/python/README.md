@@ -326,7 +326,7 @@ and [`../../.github/workflows/wheel-smoke.yml`](../../.github/workflows/wheel-sm
 - Build backend: `cibuildwheel`
 - Platforms:
   - Linux manylinux x86_64
-  - macOS universal2 (validated on `macos-13` and `macos-14`)
+  - macOS universal2 (validated on `macos-15-intel` and `macos-14`)
   - Windows amd64 (`windows-2022`)
 - Python matrix:
   - Full (`main`/nightly/tag): `3.9`, `3.10`, `3.11`, `3.12`, `3.13`
