@@ -99,6 +99,7 @@ jobs:
           CIBW_BUILD_VERBOSITY: "1"
           CIBW_PRERELEASE_PYTHONS: "True"
           CIBW_ENVIRONMENT: "PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1"
+          CIBW_ENVIRONMENT_MACOS: "PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 MACOSX_DEPLOYMENT_TARGET=10.12"
         with:
           package-dir: cpd/python
           output-dir: cpd/target/wheels
@@ -113,6 +114,7 @@ jobs:
           CIBW_BUILD_VERBOSITY: "1"
           CIBW_PRERELEASE_PYTHONS: "True"
           CIBW_ENVIRONMENT: "PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1"
+          CIBW_ENVIRONMENT_MACOS: "PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 MACOSX_DEPLOYMENT_TARGET=10.12"
         with:
           package-dir: cpd/python
           output-dir: cpd/target/wheels
