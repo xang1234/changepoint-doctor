@@ -16,6 +16,7 @@ from ._cpd_rs import (
     SmokeDetector,
     __version__,
     detect_offline,
+    doctor,
     smoke_detect,
 )
 
@@ -33,6 +34,7 @@ __all__ = [
     "Bocpd",
     "Cusum",
     "PageHinkley",
+    "doctor",
     "detect_offline",
     "SmokeDetector",
     "smoke_detect",

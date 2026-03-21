@@ -1,12 +1,18 @@
 /* Minimal theme overrides for changepoint-doctor docs */
 
+:root {
+    --color-brand-primary: #0f766e;
+    --color-brand-content: #0f766e;
+}
+
 /* Tighten spacing in parameter tables */
-.bd-content table td,
-.bd-content table th {
+article table td,
+article table th {
     padding: 0.4rem 0.6rem;
 }
 
 /* Ensure code blocks don't overflow on narrow screens */
-.bd-content pre {
+article pre,
+div.highlight pre {
     overflow-x: auto;
 }

@@ -2,7 +2,7 @@
 
 Use the `cpd` CLI for JSON-first workflows without writing Python glue code.
 
-Repository CLI reference: [`cpd/docs/cli.md`](../../cpd/docs/cli.md).
+The repository also ships a CLI reference in `cpd/docs/cli.md`.
 
 ## Build
 

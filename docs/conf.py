@@ -38,15 +38,14 @@ bibtex_default_style = "unsrt"
 
 # -- HTML output --------------------------------------------------------
 
-html_theme = "pydata_sphinx_theme"
+html_theme = "furo"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 
 html_theme_options = {
-    "github_url": "https://github.com/xang1234/changepoint-doctor",
-    "show_toc_level": 2,
-    "navigation_with_keys": True,
-    "icon_links": [],
+    "source_repository": "https://github.com/xang1234/changepoint-doctor/",
+    "source_branch": "main",
+    "source_directory": "docs/",
 }
 
 html_title = "changepoint-doctor"

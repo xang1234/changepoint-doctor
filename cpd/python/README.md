@@ -45,8 +45,32 @@ extension (for example `maturin develop --features preprocess,serde ...`).
 - `cpd.Pelt`: high-level PELT detector.
 - `cpd.Binseg`: high-level Binary Segmentation detector.
 - `cpd.Fpop`: high-level FPOP detector (L2 cost only).
+- `cpd.doctor`: returns a Python dict with doctor diagnostics, ranked recommendations, confidence metadata, and preprocessing guidance.
 - `cpd.detect_offline`: low-level API for explicit detector/cost/constraints/stopping/preprocess selection, including `detector="segneigh"` (exact fixed-K DP; `dynp` alias supported).
 - `cpd.OfflineChangePointResult`: typed result object with breakpoints and diagnostics.
+
+## Doctor workflow from Python
+
+Use `cpd.doctor(...)` to stay inside Python when you want recommendation output:
+
+```python
+import cpd
+
+report = cpd.doctor(x, objective="balanced", min_confidence=0.2)
+pipeline = report["recommendations"][0]["pipeline"]
+result = cpd.detect_offline(x, pipeline=pipeline)
+print(result.breakpoints)
+```
+
+The returned report includes:
+
+- `diagnostics`: doctor diagnostics, including missing-pattern classification
+- `recommendations`: ranked pipelines with confidence, tradeoffs, and resource estimates
+- `confidence_formula`: the documented confidence calibration formula
+- `input_notes`: NumPy conversion notes from the Python adapter
+- `preprocessing`: preprocessing guidance when the build includes the `preprocess` feature
+
+`cpd.doctor(...)` is intentionally scoped to executable offline recommendations on inputs without missing values. Impute or drop NaNs before requesting a Python-side doctor report.
 
 ## Streaming `update()` vs `update_many()` Policy
 
@@ -256,7 +280,7 @@ cpd/python/.venv/bin/python cpd/python/examples/plot_breakpoints.py --out /tmp/c
 
 - `examples/notebooks/01_offline_algorithms.ipynb`: quick comparison of offline detectors (`Pelt`, `Binseg`, `Fpop`, `segneigh`, and pipeline-form `wbs`).
 - `examples/notebooks/02_online_algorithms.ipynb`: streaming workflows for `Bocpd`, `Cusum`, and `PageHinkley`.
-- `examples/notebooks/03_doctor_recommendations.ipynb`: doctor recommendation workflow with live CLI execution and snapshot fallback.
+- `examples/notebooks/03_doctor_recommendations.ipynb`: Python-first doctor recommendation workflow with `cpd.doctor(...)`, direct pipeline execution, and optional CLI JSON export.
 - `examples/notebooks/README.md`: notebook launch instructions and workflow overview.
 
 Launch from `cpd/python`:

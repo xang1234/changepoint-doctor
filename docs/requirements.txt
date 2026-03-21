@@ -1,6 +1,6 @@
 # Sphinx documentation build dependencies
 sphinx>=7.2,<8
-pydata-sphinx-theme>=0.15,<1
+furo>=2024.1.29,<2026
 myst-parser>=3,<4
 myst-nb>=1,<1.2
 sphinx-copybutton>=0.5,<1

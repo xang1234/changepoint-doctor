@@ -22,8 +22,15 @@ use cpd_costs::{
 };
 use cpd_doctor::{
     CostConfig as DoctorCostConfig, DetectorConfig as DoctorDetectorConfig,
-    OfflineDetectorConfig as DoctorOfflineDetectorConfig, PipelineSpec as DoctorPipelineSpec,
+    DoctorDiagnosticsConfig, Objective, OfflineDetectorConfig as DoctorOfflineDetectorConfig,
+    PipelineSpec as DoctorPipelineSpec, Recommendation as DoctorRecommendation,
+    confidence_formula as doctor_confidence_formula,
     execute_pipeline_with_repro_mode as execute_doctor_pipeline_with_repro_mode,
+    recommend_with_diagnostics as doctor_recommend_with_diagnostics,
+};
+#[cfg(feature = "preprocess")]
+use cpd_doctor::{
+    DoctorPreprocessConfig, recommend_preprocessing as doctor_recommend_preprocessing,
 };
 use cpd_offline::{
     BinSeg as OfflineBinSeg, BinSegConfig, Fpop as OfflineFpop, FpopConfig, Pelt as OfflinePelt,
@@ -69,17 +76,23 @@ fn parse_sequence(values: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
     })
 }
 
-fn parse_owned_series(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<OwnedSeries> {
+fn parse_owned_series_with_missing_policy(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    missing_policy: MissingPolicy,
+) -> PyResult<OwnedSeries> {
     let numpy = PyModule::import(py, "numpy")?;
     let as_array = numpy.call_method1("asarray", (x,))?;
-    let parsed = parse_numpy_series(
-        py,
-        &as_array,
-        None,
-        MissingPolicy::Error,
-        DTypePolicy::KeepInput,
-    )?;
+    let parsed = parse_numpy_series(py, &as_array, None, missing_policy, DTypePolicy::KeepInput)?;
     parsed.into_owned().map_err(cpd_error_to_pyerr)
+}
+
+fn parse_owned_series(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<OwnedSeries> {
+    parse_owned_series_with_missing_policy(py, x, MissingPolicy::Error)
+}
+
+fn parse_doctor_series(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<OwnedSeries> {
+    parse_owned_series_with_missing_policy(py, x, MissingPolicy::Ignore)
 }
 
 #[cfg(feature = "serde")]
@@ -252,6 +265,47 @@ fn parse_repro_mode(repro_mode: &str) -> PyResult<ReproMode> {
             "unsupported repro_mode '{repro_mode}'; expected one of: 'fast', 'balanced', 'strict'"
         ))),
     }
+}
+
+fn parse_doctor_objective(objective: &str) -> PyResult<Objective> {
+    match objective.to_ascii_lowercase().as_str() {
+        "balanced" => Ok(Objective::Balanced),
+        "speed" => Ok(Objective::Speed),
+        "accuracy" => Ok(Objective::Accuracy),
+        "robustness" => Ok(Objective::Robustness),
+        _ => Err(PyValueError::new_err(format!(
+            "unsupported objective '{objective}'; expected one of: 'balanced', 'speed', 'accuracy', 'robustness'"
+        ))),
+    }
+}
+
+#[cfg(feature = "serde")]
+fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<Py<PyAny>> {
+    let json = PyModule::import(py, "json")?;
+    let encoded = serde_json::to_vec(value).map_err(|err| {
+        PyRuntimeError::new_err(format!("failed to serialize doctor report as JSON: {err}"))
+    })?;
+    let loaded = json.call_method1("loads", (PyBytes::new(py, &encoded),))?;
+    Ok(loaded.into_any().unbind())
+}
+
+#[cfg(all(feature = "serde", feature = "preprocess"))]
+fn doctor_preprocess_to_json(
+    recommendation: cpd_doctor::PreprocessRecommendation,
+) -> serde_json::Value {
+    let cpd_doctor::PreprocessRecommendation {
+        pipeline,
+        reasons,
+        signals,
+        warnings,
+    } = recommendation;
+    let pipeline = pipeline.as_ref().map(PreprocessPipeline::config);
+    serde_json::json!({
+        "pipeline": pipeline,
+        "reasons": reasons,
+        "signals": signals,
+        "warnings": warnings,
+    })
 }
 
 fn required_dict_key<'py>(
@@ -2736,6 +2790,75 @@ impl PyPageHinkley {
     }
 }
 
+/// Native Python entrypoint for doctor recommendations and diagnostics.
+#[pyfunction]
+#[pyo3(signature = (x, *, objective = "balanced", constraints = None, min_confidence = 0.2, allow_abstain = false))]
+fn doctor(
+    py: Python<'_>,
+    x: &Bound<'_, PyAny>,
+    objective: &str,
+    constraints: Option<&Bound<'_, PyAny>>,
+    min_confidence: f64,
+    allow_abstain: bool,
+) -> PyResult<Py<PyAny>> {
+    #[cfg(not(feature = "serde"))]
+    {
+        let _ = (py, x, objective, constraints, min_confidence, allow_abstain);
+        return Err(PyRuntimeError::new_err(
+            "doctor requires cpd-python built with serde feature; rebuild with --features extension-module,serde",
+        ));
+    }
+
+    #[cfg(feature = "serde")]
+    {
+        let objective = parse_doctor_objective(objective)?;
+        let constraints = match constraints {
+            Some(value) if !value.is_none() => Some(parse_constraints(Some(value))?),
+            _ => None,
+        };
+        let owned = parse_doctor_series(py, x)?;
+
+        let report = py
+            .allow_threads(|| -> Result<serde_json::Value, CpdError> {
+                let view = owned.view()?;
+                if view.has_missing() {
+                    return Err(CpdError::invalid_input(
+                        "cpd.doctor currently requires inputs without missing values because Python execution paths reject NaN-bearing signals; impute or drop missing values before requesting executable recommendations",
+                    ));
+                }
+
+                let (diagnostics, recommendations): (cpd_doctor::DiagnosticsReport, Vec<DoctorRecommendation>) = doctor_recommend_with_diagnostics(
+                    &view,
+                    &DoctorDiagnosticsConfig::default(),
+                    objective,
+                    false,
+                    constraints.clone(),
+                    min_confidence,
+                    allow_abstain,
+                )?;
+
+                let mut payload = serde_json::json!({
+                    "diagnostics": diagnostics,
+                    "recommendations": recommendations,
+                    "confidence_formula": doctor_confidence_formula(),
+                    "input_notes": owned.diagnostics(),
+                });
+
+                #[cfg(feature = "preprocess")]
+                {
+                    let preprocessing =
+                        doctor_recommend_preprocessing(&view, &DoctorPreprocessConfig::default())?;
+                    payload["preprocessing"] = doctor_preprocess_to_json(preprocessing);
+                }
+
+                Ok(payload)
+            })
+            .map_err(cpd_error_to_pyerr)?;
+
+        return json_value_to_py(py, &report);
+    }
+}
+
 /// Low-level power-user API for fully-specified offline detection.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
@@ -2930,6 +3053,7 @@ fn _cpd_rs(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyCusumState>()?;
     module.add_class::<PyPageHinkleyState>()?;
     module.add_class::<SmokeDetector>()?;
+    module.add_function(wrap_pyfunction!(doctor, module)?)?;
     module.add_function(wrap_pyfunction!(detect_offline, module)?)?;
     module.add_function(wrap_pyfunction!(smoke_detect, module)?)?;
     Ok(())

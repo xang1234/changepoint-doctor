@@ -1,5 +1,6 @@
 # Result Types
 
+(offline-change-point-result)=
 ## `OfflineChangePointResult`
 
 Returned by all offline detectors. Contains detected breakpoints, optional scores and segment statistics, and rich diagnostics.
@@ -72,6 +73,7 @@ fig = result.plot(x, title="Detected breakpoints")
 
 ---
 
+(online-step-result)=
 ## `OnlineStepResult`
 
 Emitted by online detectors for each processed observation.

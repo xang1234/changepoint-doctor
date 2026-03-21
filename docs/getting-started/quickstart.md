@@ -90,27 +90,23 @@ print("Cost model:", result.diagnostics.cost_model)
 
 ## Doctor recommendations
 
-Use the doctor CLI to get pipeline recommendations, then execute in Python:
-
-```bash
-cpd doctor --input /path/to/signal.csv --objective balanced --min-confidence 0.2 --output doctor.json
-```
-
-Execute a recommended pipeline:
+Use the native Python doctor entrypoint when you want recommendations in-process:
 
 ```python
 import cpd
 
-# Pipeline dict from doctor output
-pipeline = {
-    "detector": {"kind": "pelt"},
-    "cost": "l2",
-    "stopping": {"pen": "bic"},
-    "constraints": {"min_segment_len": 2},
-}
-
+report = cpd.doctor(x, objective="balanced", min_confidence=0.2)
+pipeline = report["recommendations"][0]["pipeline"]
 result = cpd.detect_offline(x, pipeline=pipeline)
 print(result.breakpoints)
+```
+
+This Python path is scoped to executable offline recommendations on inputs without missing values.
+
+Use the CLI when you want a file-backed JSON report:
+
+```bash
+cpd doctor --input /path/to/signal.csv --objective balanced --min-confidence 0.2 --output doctor.json
 ```
 
 ## Serialize and plot results

@@ -4,7 +4,7 @@ This folder contains quickstart notebooks for common changepoint-doctor workflow
 
 - `01_offline_algorithms.ipynb`: compare offline detectors on noisy KPI-style data.
 - `02_online_algorithms.ipynb`: run streaming detectors on service-latency data.
-- `03_doctor_recommendations.ipynb`: generate doctor recommendations with live CLI execution and snapshot fallback.
+- `03_doctor_recommendations.ipynb`: generate Python-first doctor recommendations with `cpd.doctor(...)`, run the top pipeline immediately, and optionally export a CLI JSON artifact.
 
 ## Repo Layout
 
@@ -34,4 +34,4 @@ Then open `examples/notebooks/` in Jupyter and run notebooks top-to-bottom.
 ## Notes
 
 - Sample data is generated in notebook cells with fixed random seeds for reproducibility.
-- Notebook 3 tries live `cpd doctor` first, then falls back to `data/doctor_recommendations_snapshot.json` if CLI execution is unavailable.
+- Notebook 3 is Python-first and uses `cpd.doctor(...)` for executable offline recommendations; it also shows how to export a matching CLI JSON artifact when you need a file-backed report.

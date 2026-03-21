@@ -32,16 +32,27 @@ Execute a doctor recommendation directly:
 
 ```python
 import cpd
-import json
 
-# Load doctor output
-with open("doctor.json") as f:
-    recommendations = json.load(f)
-
-# Use the top recommendation's pipeline
-pipeline = recommendations[0]["pipeline"]
+report = cpd.doctor(x, objective="balanced", min_confidence=0.2)
+pipeline = report["recommendations"][0]["pipeline"]
 result = cpd.detect_offline(x, pipeline=pipeline)
 print(result.breakpoints)
+```
+
+`cpd.doctor(...)` returns a Python dict with:
+
+- `diagnostics`: doctor signal diagnostics, including missing-pattern classification
+- `recommendations`: ranked pipelines with confidence, explanation, and resource estimates
+- `confidence_formula`: the documented calibration formula used for confidence scores
+- `input_notes`: NumPy conversion notes from the Python adapter
+- `preprocessing`: optional preprocessing guidance when the build includes the `preprocess` feature
+
+The Python entrypoint is scoped to executable offline recommendations on inputs without missing values.
+
+The CLI workflow remains useful when you want a persisted JSON artifact:
+
+```bash
+cpd doctor --input /path/to/signal.csv --objective balanced --min-confidence 0.2 --output doctor.json
 ```
 
 ## Objectives
@@ -114,19 +125,10 @@ shift = np.where(t >= 500, 3.0, 0.0)
 noise = np.random.default_rng(42).normal(0, 0.5, 1000)
 signal = seasonal + trend + shift + noise
 
-# Doctor would recommend preprocessing + PELT
-# After running doctor CLI or using the recommendation:
-result = cpd.detect_offline(
-    signal,
-    detector="pelt",
-    cost="l2",
-    constraints={"min_segment_len": 10},
-    stopping={"pen": "bic"},
-    preprocess={
-        "detrend": {"method": "linear"},
-        "deseasonalize": {"method": "stl_like", "period": 50},
-    },
-)
+# Ask the Python doctor for an executable offline recommendation
+report = cpd.doctor(signal, objective="balanced", min_confidence=0.2)
+pipeline = report["recommendations"][0]["pipeline"]
+result = cpd.detect_offline(signal, pipeline=pipeline)
 
 print("Change points:", result.change_points)
 # Expected: change point near index 500

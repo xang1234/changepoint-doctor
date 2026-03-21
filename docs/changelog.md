@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Switched the Sphinx documentation theme to Furo and added a GitHub Pages deployment workflow for the docs site.
+- Refreshed the doctor docs and notebook guidance around the new Python-first `cpd.doctor(...)` workflow, including its offline-only and missing-value constraints.
 - Added explicit Python optional extras (`plot`, `notebooks`, `parity`, `dev`) and migrated onboarding docs to extras-first install commands.
 - Standardized install/import naming guidance: install `changepoint-doctor`, import `cpd`, with optional `changepoint_doctor` compatibility alias.
 - Added notebook/docs path guardrails and normalized notebook onboarding to clone-safe, repo-relative instructions.

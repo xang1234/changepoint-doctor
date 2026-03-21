@@ -3,7 +3,8 @@
 #![forbid(unsafe_code)]
 
 use crate::diagnostics::{
-    DiagnosticsSummary, DoctorDiagnosticsConfig, MissingPattern, compute_diagnostics,
+    DiagnosticsReport, DiagnosticsSummary, DoctorDiagnosticsConfig, MissingPattern,
+    compute_diagnostics,
 };
 use cpd_core::{
     Constraints, CpdError, DTypeView, ExecutionContext, MemoryLayout, MissingPolicy,
@@ -231,6 +232,7 @@ impl CalibrationAccumulator {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Recommendation {
     pub pipeline: PipelineSpec,
@@ -582,6 +584,7 @@ pub enum OnlineDetectorConfig {
     PageHinkley(PageHinkleyConfig),
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResourceEstimate {
     pub time_complexity: String,
@@ -590,6 +593,7 @@ pub struct ResourceEstimate {
     pub relative_memory_score: f64,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Explanation {
     pub summary: String,
@@ -597,12 +601,14 @@ pub struct Explanation {
     pub tradeoffs: Vec<String>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidationSummary {
     pub method: String,
     pub notes: Vec<String>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidationReport {
     pub pipeline_results: Vec<(PipelineSpec, OfflineChangePointResult)>,
@@ -648,6 +654,7 @@ pub struct EnsembleBreakpoint {
 }
 
 /// Output from ensemble execution across multiple offline pipelines.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnsembleReport {
     pub breakpoints: Vec<EnsembleBreakpoint>,
@@ -794,6 +801,27 @@ pub fn recommend(
     min_confidence: f64,
     allow_abstain: bool,
 ) -> Result<Vec<Recommendation>, CpdError> {
+    let (_, recommendations) = recommend_with_diagnostics(
+        x,
+        &DoctorDiagnosticsConfig::default(),
+        objective,
+        online,
+        constraints,
+        min_confidence,
+        allow_abstain,
+    )?;
+    Ok(recommendations)
+}
+
+pub fn recommend_with_diagnostics(
+    x: &TimeSeriesView<'_>,
+    diagnostics_cfg: &DoctorDiagnosticsConfig,
+    objective: Objective,
+    online: bool,
+    constraints: Option<Constraints>,
+    min_confidence: f64,
+    allow_abstain: bool,
+) -> Result<(DiagnosticsReport, Vec<Recommendation>), CpdError> {
     if !min_confidence.is_finite() || !(0.0..=1.0).contains(&min_confidence) {
         return Err(CpdError::invalid_input(format!(
             "min_confidence must be finite and within [0, 1]; got {min_confidence}"
@@ -810,7 +838,7 @@ pub fn recommend(
     validate_constraints_config(&base_constraints)?;
     let _ = validate_constraints(&base_constraints, x.n)?;
 
-    let diagnostics = compute_diagnostics(x, &DoctorDiagnosticsConfig::default())?;
+    let diagnostics = compute_diagnostics(x, diagnostics_cfg)?;
     let data_hints = sample_data_hints(x, diagnostics.subsample_stride.max(1), BINARY_TOLERANCE)?;
     let flags = signal_flags(x, &diagnostics.summary);
     let strongest_signal = strongest_active_signal(&diagnostics.summary, flags, data_hints);
@@ -882,7 +910,7 @@ pub fn recommend(
             "returned safe baseline because allow_abstain=true and threshold was not met"
                 .to_string(),
         );
-        return Ok(vec![safe]);
+        return Ok((diagnostics, vec![safe]));
     }
 
     if !allow_abstain && top_confidence < min_confidence {
@@ -898,7 +926,7 @@ pub fn recommend(
         .map(|entry| entry.recommendation)
         .collect::<Vec<_>>();
 
-    Ok(recommendations)
+    Ok((diagnostics, recommendations))
 }
 
 /// Executes an offline pipeline specification directly from Rust.

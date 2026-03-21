@@ -80,13 +80,24 @@ Python high-level classes include `cpd.Pelt`, `cpd.Binseg`, `cpd.Fpop`, `cpd.Boc
 
 ## The changepoint doctor function
 
-Use the doctor flow when you want configuration help before running detection. The CLI entrypoint is `cpd doctor`, which returns ranked recommendations with confidence and objective fit.
+Use the doctor flow when you want configuration help before running detection. Python now exposes the same workflow directly through `cpd.doctor(...)`, and the CLI entrypoint remains available as `cpd doctor`.
+
+```python
+import cpd
+
+report = cpd.doctor(x, objective="balanced", min_confidence=0.2)
+top_pipeline = report["recommendations"][0]["pipeline"]
+result = cpd.detect_offline(x, pipeline=top_pipeline)
+print(result.breakpoints)
+```
+
+The returned report includes diagnostics, ranked recommendations, the documented confidence formula, input conversion notes, and preprocessing guidance when the Python build includes the `preprocess` feature. The Python entrypoint is intentionally scoped to executable offline recommendations on missing-free inputs.
+
+Use the CLI when you want a file-backed JSON artifact or shell-first workflow:
 
 ```bash
 cpd doctor --input /path/to/signal.csv --objective balanced --min-confidence 0.2 --output doctor.json
 ```
-
-After selecting a recommended pipeline, execute it in Python through `cpd.detect_offline(pipeline=...)`. This gives a practical bridge: doctor proposes, Python executes.
 
 ## Algorithms: when and how to use them
 

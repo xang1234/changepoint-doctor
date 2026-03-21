@@ -102,6 +102,7 @@ def test_import_surface_exposes_mvp_a_api() -> None:
     assert hasattr(cpd, "Pelt")
     assert hasattr(cpd, "Binseg")
     assert hasattr(cpd, "Fpop")
+    assert hasattr(cpd, "doctor")
     assert hasattr(cpd, "detect_offline")
 
 
@@ -212,6 +213,39 @@ def test_detect_offline_exposes_build_provenance_context() -> None:
     assert build.abi == "pyo3-abi3-py39"
     assert build.features is not None
     assert "serde" in build.features
+
+
+def test_doctor_report_returns_executable_pipeline() -> None:
+    x = _three_regime_signal()
+
+    report = cpd.doctor(x, objective="balanced", min_confidence=0.0)
+
+    assert report["diagnostics"]["n"] == len(x)
+    assert report["diagnostics"]["d"] == 1
+    assert "confidence = clamp" in report["confidence_formula"]
+    assert report["recommendations"]
+
+    top = report["recommendations"][0]
+    result = cpd.detect_offline(x, pipeline=top["pipeline"], repro_mode="balanced")
+
+    assert top["confidence"] >= 0.0
+    assert result.breakpoints[-1] == len(x)
+    assert result.diagnostics.algorithm
+
+
+def test_doctor_rejects_missing_values_until_python_execution_supports_them() -> None:
+    x = _three_regime_signal().copy()
+    x[24:36] = np.nan
+
+    with pytest.raises(ValueError, match="requires inputs without missing values"):
+        cpd.doctor(x, min_confidence=0.0)
+
+
+def test_doctor_rejects_online_mode_in_python_surface() -> None:
+    x = _three_regime_signal()
+
+    with pytest.raises(TypeError):
+        cpd.doctor(x, online=True)
 
 
 @pytest.mark.parametrize(

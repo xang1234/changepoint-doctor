@@ -259,6 +259,16 @@ class SmokeDetector:
     def predict(self) -> list[int]: ...
 
 
+def doctor(
+    x: Any,
+    *,
+    objective: str = "balanced",
+    constraints: dict[str, Any] | None = None,
+    min_confidence: float = 0.2,
+    allow_abstain: bool = False,
+) -> dict[str, Any]: ...
+
+
 def detect_offline(
     values: Any,
     *,

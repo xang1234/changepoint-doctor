@@ -15,7 +15,7 @@ pub use recommendation::{
     OnlineObservationKind, PipelineConfig, PipelineSpec, Recommendation, ResourceEstimate,
     ValidationReport, ValidationSummary, confidence_formula, evaluate_calibration,
     execute_ensemble, execute_pipeline, execute_pipeline_with_repro_mode, recommend,
-    validate_top_k,
+    recommend_with_diagnostics, validate_top_k,
 };
 
 #[cfg(feature = "preprocess")]

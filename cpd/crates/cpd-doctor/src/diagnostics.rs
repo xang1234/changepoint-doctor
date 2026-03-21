@@ -19,6 +19,7 @@ const DEFAULT_MIN_VALID_PER_DIM: usize = 32;
 const DEFAULT_EPSILON: f64 = 1.0e-12;
 const NORMAL_CONSISTENCY: f64 = 1.4826;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DoctorDiagnosticsConfig {
     pub subsample_threshold: usize,
@@ -46,6 +47,7 @@ impl Default for DoctorDiagnosticsConfig {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MissingPattern {
     None,
@@ -53,12 +55,14 @@ pub enum MissingPattern {
     Block,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DominantPeriodHint {
     pub period: usize,
     pub strength: f64,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DimensionDiagnostics {
     pub dimension: usize,
@@ -79,6 +83,7 @@ pub struct DimensionDiagnostics {
     pub change_density_score: Option<f64>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DiagnosticsSummary {
     pub valid_dimensions: usize,
@@ -99,6 +104,7 @@ pub struct DiagnosticsSummary {
     pub dominant_period_hints: Vec<DominantPeriodHint>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DiagnosticsReport {
     pub n: usize,

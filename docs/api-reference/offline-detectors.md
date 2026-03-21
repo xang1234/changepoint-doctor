@@ -40,7 +40,7 @@ Run PELT detection and return results.
 
 - **pen**: `float | str | None` -- Penalty value. A float for manual penalty, `"bic"` for BIC, `"aic"` for AIC
 - **n_bkps**: `int | None` -- Exact number of change points to detect
-- **Returns**: {class}`OfflineChangePointResult`
+- **Returns**: {ref}`OfflineChangePointResult <offline-change-point-result>`
 - **Raises**: `RuntimeError` if `fit()` was not called first
 
 :::{note}

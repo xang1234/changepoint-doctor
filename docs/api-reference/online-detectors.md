@@ -44,14 +44,14 @@ Process a single scalar observation.
 
 - **x_t**: `float` -- Observation value
 - **t_ns**: `int | None` -- Optional nanosecond timestamp
-- **Returns**: {class}`OnlineStepResult`
+- **Returns**: {ref}`OnlineStepResult <online-step-result>`
 
 #### `update_many(x_batch) -> list[OnlineStepResult]`
 
 Process a batch of observations. Uses GIL-release optimization for batches >= 16 elements.
 
 - **x_batch**: array-like of `float64`
-- **Returns**: List of {class}`OnlineStepResult`
+- **Returns**: List of {ref}`OnlineStepResult <online-step-result>`
 
 #### `reset() -> None`
 
