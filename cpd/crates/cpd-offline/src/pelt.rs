@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use crate::dynp::solve_exact_known_k_with_dynp;
 use cpd_core::{
     BudgetStatus, CpdError, Diagnostics, ExecutionContext, OfflineChangePointResult,
     OfflineDetector, Penalty, PruningStats, Stopping, TimeSeriesView, ValidatedConstraints,
@@ -98,7 +99,8 @@ struct RuntimeStats {
 #[derive(Clone, Debug)]
 struct KnownKSearchResult {
     kernel: KernelResult,
-    selected_beta: f64,
+    selected_beta: Option<f64>,
+    exact_solver: &'static str,
     iterations: usize,
 }
 
@@ -665,7 +667,8 @@ fn run_known_k_search<C: CostModel>(
     if low_kernel.change_count == k {
         return Ok(KnownKSearchResult {
             kernel: low_kernel,
-            selected_beta: low_beta,
+            selected_beta: Some(low_beta),
+            exact_solver: "pelt_penalty_search",
             iterations,
         });
     }
@@ -679,7 +682,6 @@ fn run_known_k_search<C: CostModel>(
 
     let mut high_beta = low_beta;
     let mut high_kernel = low_kernel.clone();
-    let mut low_kernel = low_kernel;
 
     for _ in 0..KNOWN_K_MAX_DOUBLINGS {
         if high_kernel.change_count <= k {
@@ -708,7 +710,8 @@ fn run_known_k_search<C: CostModel>(
         if high_kernel.change_count == k {
             return Ok(KnownKSearchResult {
                 kernel: high_kernel,
-                selected_beta: high_beta,
+                selected_beta: Some(high_beta),
+                exact_solver: "pelt_penalty_search",
                 iterations,
             });
         }
@@ -743,24 +746,56 @@ fn run_known_k_search<C: CostModel>(
         if mid_kernel.change_count == k {
             return Ok(KnownKSearchResult {
                 kernel: mid_kernel,
-                selected_beta: mid_beta,
+                selected_beta: Some(mid_beta),
+                exact_solver: "pelt_penalty_search",
                 iterations,
             });
         }
 
         if mid_kernel.change_count > k {
             low_beta = mid_beta;
-            low_kernel = mid_kernel;
         } else {
             high_beta = mid_beta;
-            high_kernel = mid_kernel;
         }
     }
 
-    Err(CpdError::invalid_input(format!(
-        "KnownK exact solution unreachable: requested k={k}, bracketed counts were low_beta={low_beta} -> {} changes and high_beta={high_beta} -> {} changes",
-        low_kernel.change_count, high_kernel.change_count
-    )))
+    let fallback = solve_exact_known_k_with_dynp(
+        model,
+        cache,
+        x,
+        validated,
+        k,
+        cancel_check_every,
+        ctx,
+        started_at,
+        runtime.cost_evals,
+        runtime.candidates_considered,
+    )?;
+    runtime.cost_evals = runtime
+        .cost_evals
+        .checked_add(fallback.additional_cost_evals)
+        .ok_or_else(|| CpdError::resource_limit("cost_evals overflow during dynp fallback"))?;
+    runtime.candidates_considered = runtime
+        .candidates_considered
+        .checked_add(fallback.additional_candidates_considered)
+        .ok_or_else(|| {
+            CpdError::resource_limit("candidates_considered overflow during dynp fallback")
+        })?;
+    runtime.soft_budget_exceeded |= fallback.soft_budget_exceeded;
+
+    Ok(KnownKSearchResult {
+        kernel: KernelResult {
+            breakpoints: fallback.breakpoints,
+            change_count: fallback.change_count,
+            objective: fallback.objective,
+            cost_evals: fallback.additional_cost_evals,
+            candidates_considered: fallback.additional_candidates_considered,
+            candidates_pruned: 0,
+        },
+        selected_beta: None,
+        exact_solver: "dynp_fallback",
+        iterations,
+    })
 }
 
 impl<C: CostModel> OfflineDetector for Pelt<C> {
@@ -828,10 +863,16 @@ impl<C: CostModel> OfflineDetector for Pelt<C> {
                     started_at,
                     &mut runtime,
                 )?;
-                notes.push(format!(
-                    "stopping=KnownK({k}), selected_beta={}, search_iterations={}",
-                    known_k.selected_beta, known_k.iterations
-                ));
+                match known_k.selected_beta {
+                    Some(selected_beta) => notes.push(format!(
+                        "stopping=KnownK({k}), selected_beta={selected_beta}, exact_solver={}, search_iterations={}",
+                        known_k.exact_solver, known_k.iterations
+                    )),
+                    None => notes.push(format!(
+                        "stopping=KnownK({k}), exact_solver={}, search_iterations={}",
+                        known_k.exact_solver, known_k.iterations
+                    )),
+                }
                 known_k.kernel
             }
             Stopping::PenaltyPath(path) => {
@@ -943,6 +984,7 @@ impl<C: CostModel> OfflineDetector for Pelt<C> {
 #[cfg(test)]
 mod tests {
     use super::{Pelt, PeltConfig, resolve_penalty_beta};
+    use crate::dynp::{Dynp, DynpConfig};
     use cpd_core::{
         BudgetMode, Constraints, DTypeView, ExecutionContext, MemoryLayout, MissingPolicy,
         OfflineDetector, Penalty, ProgressSink, ReproMode, Stopping, TimeIndex, TimeSeriesView,
@@ -1711,6 +1753,63 @@ mod tests {
         assert_eq!(
             replicated_result.breakpoints.last().copied(),
             Some(replicated.len())
+        );
+    }
+
+    #[test]
+    fn known_k_student_t_falls_back_to_exact_solver_when_penalty_path_skips_k() {
+        let pelt = Pelt::new(
+            CostStudentT::default(),
+            PeltConfig {
+                stopping: Stopping::KnownK(2),
+                params_per_segment: 2,
+                cancel_check_every: 8,
+            },
+        )
+        .expect("config should be valid");
+        let dynp = Dynp::new(
+            CostStudentT::default(),
+            DynpConfig {
+                stopping: Stopping::KnownK(2),
+                cancel_check_every: 8,
+            },
+        )
+        .expect("dynp config should be valid");
+
+        let mut values = vec![0.0; 40];
+        values.extend(std::iter::repeat_n(8.0, 40));
+        values.extend(std::iter::repeat_n(-4.0, 40));
+        values[12] = 40.0;
+        values[74] = -35.0;
+
+        let view = make_f64_view(
+            &values,
+            values.len(),
+            1,
+            MemoryLayout::CContiguous,
+            MissingPolicy::Error,
+        );
+        let constraints = Constraints {
+            min_segment_len: 2,
+            ..Constraints::default()
+        };
+        let ctx = ExecutionContext::new(&constraints);
+
+        let pelt_result = pelt
+            .detect(&view, &ctx)
+            .expect("student-t known-k should succeed through exact fallback");
+        let dynp_result = dynp
+            .detect(&view, &ctx)
+            .expect("dynp known-k should succeed");
+
+        assert_eq!(pelt_result.change_points.len(), 2);
+        assert_eq!(pelt_result.breakpoints, dynp_result.breakpoints);
+        assert!(
+            pelt_result
+                .diagnostics
+                .notes
+                .iter()
+                .any(|note| note.contains("exact_solver=dynp_fallback"))
         );
     }
 

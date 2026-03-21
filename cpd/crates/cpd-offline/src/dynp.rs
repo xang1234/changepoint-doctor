@@ -80,6 +80,16 @@ struct DynpKernelResult {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ExactKnownKFallback {
+    pub(crate) breakpoints: Vec<usize>,
+    pub(crate) objective: f64,
+    pub(crate) change_count: usize,
+    pub(crate) additional_cost_evals: usize,
+    pub(crate) additional_candidates_considered: usize,
+    pub(crate) soft_budget_exceeded: bool,
+}
+
+#[derive(Clone, Debug)]
 struct DynpSweepResult {
     endpoints: Vec<usize>,
     backpointers: Vec<Vec<usize>>,
@@ -534,6 +544,55 @@ fn run_dynp_known_k<C: CostModel>(
         objective,
         change_count: k,
         breakpoints,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_exact_known_k_with_dynp<C: CostModel>(
+    model: &C,
+    cache: &C::Cache,
+    x: &TimeSeriesView<'_>,
+    validated: &ValidatedConstraints,
+    k: usize,
+    cancel_check_every: usize,
+    ctx: &ExecutionContext<'_>,
+    started_at: Instant,
+    initial_cost_evals: usize,
+    initial_candidates_considered: usize,
+) -> Result<ExactKnownKFallback, CpdError> {
+    let mut runtime = RuntimeStats {
+        cost_evals: initial_cost_evals,
+        candidates_considered: initial_candidates_considered,
+        soft_budget_exceeded: false,
+    };
+    let kernel = run_dynp_known_k(
+        model,
+        cache,
+        x,
+        validated,
+        k,
+        cancel_check_every,
+        ctx,
+        started_at,
+        &mut runtime,
+    )?;
+
+    let additional_cost_evals = runtime
+        .cost_evals
+        .checked_sub(initial_cost_evals)
+        .ok_or_else(|| CpdError::resource_limit("dynp fallback cost_evals underflow"))?;
+    let additional_candidates_considered = runtime
+        .candidates_considered
+        .checked_sub(initial_candidates_considered)
+        .ok_or_else(|| CpdError::resource_limit("dynp fallback candidates_considered underflow"))?;
+
+    Ok(ExactKnownKFallback {
+        breakpoints: kernel.breakpoints,
+        objective: kernel.objective,
+        change_count: kernel.change_count,
+        additional_cost_evals,
+        additional_candidates_considered,
+        soft_budget_exceeded: runtime.soft_budget_exceeded,
     })
 }
 
